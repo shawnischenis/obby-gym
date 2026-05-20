@@ -1,0 +1,122 @@
+{
+  "$schema_version": "0.2",
+  "meta": {
+    "title": "Island Fishing",
+    "source_prompt": "build me a game for fishing where the map spawn is on a small island with a dock, and its surrounded by water, you begin with a rod that you can click and if it hits the water after a few seconds you can begin reeling in a fish (there should exist different rarities and different fish sizes)"
+  },
+  "world": [
+    {
+      "id": "ocean",
+      "primitive": "world.ocean",
+      "params": { "size_x": 600, "size_z": 600, "y_top": 0, "depth": 30 }
+    },
+    {
+      "id": "island",
+      "primitive": "world.island",
+      "params": {
+        "name": "Island",
+        "center": [0, 0, 0],
+        "radius": 25,
+        "peak_height": 10,
+        "submerge_depth": 15,
+        "material": "Sand"
+      },
+      "exports": ["waterline_radius", "peak_y"]
+    },
+    {
+      "id": "dock",
+      "primitive": "world.dock",
+      "params": {
+        "anchor_pos": { "ref": "island.center", "offset_along": "south", "offset_amount": { "ref": "island.waterline_radius", "scale": 0.9 } },
+        "direction": [0, 0, 1],
+        "length": 20, "width": 4, "deck_top_y": 2
+      }
+    }
+  ],
+  "spawn": { "primitive": "world.spawn_location", "params": { "on": "island", "offset_from_center": [0, 4, -8] } },
+  "entities": [
+    {
+      "id": "starter_rod",
+      "primitive": "entity.tool_from_creator_store",
+      "params": {
+        "query": "fishing rod tool",
+        "object_types": ["fishing rod"],
+        "vision_verify_prompt": "Is this image a fishing rod with line and reel? Answer yes or no.",
+        "fallback": "entity.procedural_rod",
+        "place_in": "StarterPack"
+      },
+      "attach_scripts": [
+        {
+          "primitive": "script.click_to_use",
+          "params": {
+            "REMOTE_FOLDER_PATH": "ReplicatedStorage.Fishing.Remotes",
+            "REMOTE_NAME": "CastRequest",
+            "REQUIRES_TARGET": true,
+            "TARGET_FILTER_LUAU": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "mechanics": [
+    {
+      "id": "fishing_flow",
+      "primitive": "script.fishing_session",
+      "params": {
+        "cast_range_studs": 40,
+        "must_hit_material": "Water",
+        "bite_delay_seconds": [2, 6],
+        "reel_window_seconds": 5,
+        "fish_table_ref": "progression.fishTable",
+        "rarity_colors_ref": "progression.rarityColors",
+        "fish_award": {
+          "primitive": "script.inventory_award",
+          "name_format": "{name} ({weight_kg} kg)",
+          "handle": { "shape": "Ball", "size_scale_ref": "fish.size", "color_ref": "fish.color" },
+          "halo": { "color_ref": "fish.rarity_color", "range": 6 }
+        },
+        "fx": {
+          "bobber": { "shape": "Ball", "size": 0.5, "color": [220, 60, 60] },
+          "line":   { "kind": "Beam", "width": 0.07, "color": [245, 245, 230] },
+          "cast_animation": { "kind": "tool_grip_swing", "pitches_deg": [-40, 55, 0], "durations_s": [0.12, 0.10, 0.25] }
+        }
+      },
+      "depends_on": ["starter_rod"]
+    }
+  ],
+  "progression": {
+    "fishTable": {
+      "primitive": "script.weighted_random",
+      "params": {
+        "TABLE_LITERAL": [
+          { "name": "Anchovy",     "rarity": "common",    "weight": 60, "sizeMin": 0.4, "sizeMax": 0.9, "color": [180, 180, 170] },
+          { "name": "Perch",       "rarity": "common",    "weight": 25, "sizeMin": 0.8, "sizeMax": 1.4, "color": [120, 150, 90] },
+          { "name": "Bass",        "rarity": "uncommon",  "weight": 10, "sizeMin": 1.2, "sizeMax": 2.2, "color": [80, 110, 70] },
+          { "name": "Swordfish",   "rarity": "rare",      "weight": 4,  "sizeMin": 2.5, "sizeMax": 4.0, "color": [60, 90, 130] },
+          { "name": "Golden Tuna", "rarity": "legendary", "weight": 1,  "sizeMin": 3.0, "sizeMax": 5.0, "color": [220, 180, 60] }
+        ]
+      }
+    },
+    "rarityColors": {
+      "common":    [200, 200, 200],
+      "uncommon":  [110, 220, 120],
+      "rare":      [80, 140, 230],
+      "legendary": [240, 190, 70]
+    }
+  },
+  "ui": [
+    { "primitive": "ui.toast", "params": {} }
+  ],
+  "verification": {
+    "structural": [
+      "Workspace.Island", "Workspace.Dock", "Workspace.IslandSpawn",
+      "StarterPack.Fishing Rod",
+      "ServerScriptService.FishingServer",
+      "ReplicatedStorage.Fishing.Remotes.CastRequest"
+    ],
+    "console_clean_after": ["build", "play_3s"],
+    "vision": [
+      { "view": "from_dock", "checklist": ["see_water", "see_island", "rod_held_by_avatar"] }
+    ]
+  }
+}

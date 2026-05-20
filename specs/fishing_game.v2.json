@@ -1,0 +1,101 @@
+{
+  "$schema_version": "0.3",
+  "meta": {
+    "title": "Island Fishing",
+    "source_prompt": "fishing on an island with a dock surrounded by water, click rod to cast, weighted fish rarities"
+  },
+  "world": [
+    {
+      "id": "ocean",
+      "primitive": "world.ocean",
+      "params": { "center": [0, -15, 0], "size_x": 600, "size_z": 600, "depth": 30 }
+    },
+    {
+      "id": "island",
+      "primitive": "world.island",
+      "params": {
+        "name": "Island",
+        "center": [0, 0, 0],
+        "radius": 25,
+        "submerge_depth": 15,
+        "material": "Sand"
+      }
+    },
+    {
+      "id": "dock",
+      "primitive": "world.dock",
+      "params": {
+        "name": "Dock",
+        "anchor_pos": [0, 0, 18],
+        "direction": [0, 0, 1],
+        "length": 20,
+        "width": 4,
+        "deck_top_y": 2,
+        "deck_thick": 1.5,
+        "post_spacing": 4,
+        "post_submerge_depth": 6
+      },
+      "depends_on": ["island"]
+    }
+  ],
+  "spawn": {
+    "id": "island_spawn",
+    "primitive": "world.spawn_location",
+    "params": {
+      "name": "IslandSpawn",
+      "position": [0, 14, -8],
+      "material": "Pebble",
+      "color": [130, 160, 130]
+    }
+  },
+  "entities": [
+    {
+      "id": "starter_rod",
+      "primitive": "entity.tool_from_creator_store",
+      "params": {
+        "query": "fishing rod tool",
+        "object_types": ["fishing rod"],
+        "place_in": "StarterPack",
+        "rename_to": "Fishing Rod"
+      }
+    }
+  ],
+  "mechanics": [
+    {
+      "id": "fish_table",
+      "primitive": "script.weighted_random",
+      "params": {
+        "TABLE_LITERAL": [
+          { "name": "Anchovy",     "rarity": "common",    "weight": 60, "sizeMin": 0.4, "sizeMax": 0.9, "color": [180, 180, 170] },
+          { "name": "Perch",       "rarity": "common",    "weight": 25, "sizeMin": 0.8, "sizeMax": 1.4, "color": [120, 150, 90] },
+          { "name": "Bass",        "rarity": "uncommon",  "weight": 10, "sizeMin": 1.2, "sizeMax": 2.2, "color": [80, 110, 70] },
+          { "name": "Swordfish",   "rarity": "rare",      "weight": 4,  "sizeMin": 2.5, "sizeMax": 4.0, "color": [60, 90, 130] },
+          { "name": "Golden Tuna", "rarity": "legendary", "weight": 1,  "sizeMin": 3.0, "sizeMax": 5.0, "color": [220, 180, 60] }
+        ]
+      }
+    },
+    {
+      "id": "fishing_session",
+      "primitive": "script.fishing_session",
+      "params": {
+        "cast_range_studs": 40,
+        "bite_delay_seconds": [2, 6],
+        "reel_window_seconds": 5,
+        "fish_table_ref": { "$ref": "fish_table" }
+      },
+      "depends_on": ["fish_table", "starter_rod"]
+    }
+  ],
+  "ui": [
+    { "id": "toast", "primitive": "ui.toast", "params": {} }
+  ],
+  "verification": {
+    "structural": [
+      "Workspace.Island", "Workspace.Dock", "Workspace.IslandSpawn",
+      "StarterPack.Fishing Rod",
+      "ServerScriptService.FishingServer",
+      "ReplicatedStorage.Fishing.Remotes.CastRequest"
+    ],
+    "console_clean_after": ["build", "play_3s"]
+  }
+}

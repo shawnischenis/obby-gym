@@ -1,0 +1,101 @@
+{
+  "schema_version": "0.1",
+  "conventions": {
+    "world": "Luau snippet that reads global `PARAMS` table and mutates Studio state. Run via execute_luau by prepending `local PARAMS = {...}`. Returns a result table the orchestrator can use to anchor downstream primitives.",
+    "script": "Luau source with `{{SLOT}}` placeholders. Orchestrator substitutes slots, then creates a Script/LocalScript/ModuleScript and sets Source.",
+    "ui": "LocalScript source with `{{SLOT}}` placeholders. Same substitution as script but parented under StarterPlayerScripts or a Tool.",
+    "asset": "Resolver recipe: ordered list of Creator Store queries, optional procedural fallback snippet, and a vision verification prompt."
+  },
+  "primitives": {
+    "world.ocean": {
+      "kind": "world",
+      "file": "world/ocean.luau",
+      "params_schema": {
+        "center": { "type": "Vector3", "default": [0, -15, 0] },
+        "size_x": { "type": "number",  "default": 600 },
+        "size_z": { "type": "number",  "default": 600 },
+        "depth":  { "type": "number",  "default": 30 }
+      },
+      "returns": { "y_top": "number — water surface y" }
+    },
+    "world.spawn_location": {
+      "kind": "world",
+      "file": "world/spawn_location.luau",
+      "params_schema": {
+        "position": { "type": "Vector3", "required": true },
+        "name":     { "type": "string",  "default": "SpawnLocation" },
+        "size":     { "type": "Vector3", "default": [6, 1, 6] },
+        "material": { "type": "Material","default": "Pebble" },
+        "color":    { "type": "Color3",  "default": [130, 160, 130] },
+        "neutral":  { "type": "boolean", "default": true }
+      },
+      "returns": { "model_path": "string" }
+    },
+    "world.island": {
+      "kind": "world",
+      "file": "world/island.luau",
+      "params_schema": {
+        "center":        { "type": "Vector3", "required": true },
+        "radius":        { "type": "number",  "required": true, "min": 5,  "max": 500 },
+        "peak_height":   { "type": "number",  "required": true, "min": 1,  "max": 200 },
+        "material":      { "type": "Material", "default": "Sand" },
+        "submerge_depth":{ "type": "number",  "default": 15, "note": "how far the ball center sits below water; controls dome steepness" }
+      },
+      "returns": {
+        "waterline_radius": "number — horizontal radius at y=0, used by dock/bridge anchoring",
+        "peak_y": "number — top y of the island",
+        "model_path": "string — Workspace path of the island marker model (if created)"
+      }
+    },
+    "world.dock": {
+      "kind": "world",
+      "file": "world/dock.luau",
+      "params_schema": {
+        "anchor_pos":  { "type": "Vector3", "required": true, "note": "world position where the shore-end of the dock starts" },
+        "direction":   { "type": "Vector3", "required": true, "note": "unit vector pointing away from shore into water (Y must be 0)" },
+        "length":      { "type": "number",  "default": 20, "min": 4, "max": 200 },
+        "width":       { "type": "number",  "default": 4,  "min": 2, "max": 20 },
+        "deck_top_y":  { "type": "number",  "default": 2 },
+        "deck_thick":  { "type": "number",  "default": 1.5 },
+        "post_spacing":{ "type": "number",  "default": 4 },
+        "post_submerge_depth": { "type": "number", "default": 6 },
+        "color_deck":  { "type": "Color3",  "default": [150, 110, 70] },
+        "color_post":  { "type": "Color3",  "default": [95, 65, 40] }
+      },
+      "returns": {
+        "model_path": "string — Workspace path",
+        "tip_position": "Vector3 — world pos at the far end of the dock (good NPC/spawn anchor)"
+      }
+    },
+    "script.weighted_random": {
+      "kind": "script",
+      "file": "scripts/weighted_random.luau",
+      "module_type": "ModuleScript",
+      "slots": ["{{TABLE_LITERAL}}"],
+      "exports": "function pick() -> selectedEntry — picks proportional to entry.weight"
+    },
+    "script.click_to_use": {
+      "kind": "script",
+      "file": "scripts/click_to_use.luau",
+      "module_type": "LocalScript",
+      "parent_kind": "Tool",
+      "slots": ["{{REMOTE_NAME}}", "{{REMOTE_FOLDER_PATH}}", "{{REQUIRES_TARGET}}", "{{TARGET_FILTER_LUAU}}"],
+      "behavior": "Tool.Activated handler. Reads mouse.Hit and fires named RemoteEvent on a server folder. Optional client-side target validation."
+    },
+    "script.inventory_award": {
+      "kind": "script",
+      "file": "scripts/inventory_award.luau",
+      "module_type": "ModuleScript",
+      "slots": [],
+      "exports": "function award(player, opts) — creates a Tool from opts and parents to Backpack. opts: { name, handle_shape, handle_color, handle_size, halo_color?, halo_range? }"
+    },
+    "ui.toast": {
+      "kind": "ui",
+      "file": "ui/toast.luau",
+      "module_type": "ModuleScript",
+      "parent_kind": "PlayerGui_or_ReplicatedStorage",
+      "slots": [],
+      "exports": "function show(text, color, duration) on a singleton ScreenGui label parented to the local player's PlayerGui"
+    }
+  }
+}
