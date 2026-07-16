@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roblox-obby-rl.local/schemas/course.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generator_version", "start_position", "heading_degrees", "platform_width", "platform_length", "platform_height", "gap_min", "gap_max", "finish_depth", "kill_plane_y"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "const": "gap-course-v1" },
+    "generator_version": { "const": "0.1.0" },
+    "start_position": { "type": "array", "prefixItems": [{"type":"number"},{"type":"number"},{"type":"number"}], "items": false },
+    "heading_degrees": { "type": "number" },
+    "platform_width": { "type": "number", "minimum": 4 },
+    "platform_length": { "type": "number", "minimum": 6 },
+    "platform_height": { "type": "number", "exclusiveMinimum": 0 },
+    "gap_min": { "type": "number", "minimum": 1 },
+    "gap_max": { "type": "number", "minimum": 1 },
+    "finish_depth": { "type": "number", "exclusiveMinimum": 0 },
+    "kill_plane_y": { "type": "number" }
+  }
+}

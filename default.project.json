@@ -11,6 +11,12 @@
       "$className": "ServerScriptService",
       "$path": "src/ServerScriptService"
     },
+    "HttpService": {
+      "$className": "HttpService",
+      "$properties": {
+        "HttpEnabled": true
+      }
+    },
     "Workspace": {
       "$className": "Workspace",
       "$properties": {

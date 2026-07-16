@@ -35,7 +35,7 @@
       "required": ["transport", "base_url", "local_only", "request_timeout_seconds", "rollout_batch_steps", "protocol_version"],
       "properties": {
         "transport": { "const": "http" },
-        "base_url": { "type": "string", "pattern": "^http://(127\\.0\\.0\\.1|localhost):[0-9]+$" },
+        "base_url": { "type": "string", "pattern": "^http://(127\\.0\\.0\\.1|localhost|10\\.[0-9.]+|192\\.168\\.[0-9.]+|172\\.(1[6-9]|2[0-9]|3[01])\\.[0-9.]+):[0-9]+$" },
         "local_only": { "const": true },
         "request_timeout_seconds": { "type": "number", "exclusiveMinimum": 0 },
         "rollout_batch_steps": { "type": "integer", "minimum": 1 },

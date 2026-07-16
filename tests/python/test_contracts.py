@@ -4,13 +4,19 @@ from copy import deepcopy
 
 import pytest
 from jsonschema import ValidationError
-
-from obby_rl.config import config_sha256, validate_config, validate_seed_partitions
+from obby_rl.config import (
+    config_sha256,
+    validate_config,
+    validate_luau_config,
+    validate_seed_partitions,
+)
 from obby_rl.protocol import validate_message
+from obby_rl.provenance import collect_provenance
 
 
 def test_m0_config_is_valid_and_stably_hashable() -> None:
     config = validate_config()
+    validate_luau_config(config)
     assert config_sha256(config) == config_sha256(deepcopy(config))
     assert len(config_sha256(config)) == 64
 
@@ -46,3 +52,11 @@ def test_action_rejects_out_of_range_value() -> None:
     }
     with pytest.raises(ValidationError):
         validate_message(message)
+
+
+def test_provenance_identifies_experiment() -> None:
+    config = validate_config()
+    provenance = collect_provenance(config)
+    assert len(provenance["git"]["commit"]) == 40
+    assert provenance["config"]["sha256"] == config_sha256(config)
+    assert provenance["generator"]["seed_partitions"] == config["generator"]["seed_partitions"]

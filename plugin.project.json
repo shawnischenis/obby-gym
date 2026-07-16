@@ -1,0 +1,9 @@
+{
+  "name": "ObbyRLBridge",
+  "tree": {
+    "$className": "Model",
+    "Bridge": {
+      "$path": "plugin/ObbyRLBridge.plugin.lua"
+    }
+  }
+}

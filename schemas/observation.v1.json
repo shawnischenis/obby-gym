@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roblox-obby-rl.local/schemas/observation.v1.json",
+  "title": "obby-structured-v1 vector layout",
+  "schema_version": "obby-structured-v1",
+  "size": 22,
+  "fields": [
+    {"name":"velocity_local_x","index":0,"range":[-1,1],"scale":32},
+    {"name":"velocity_local_y","index":1,"range":[-1,1],"scale":32},
+    {"name":"velocity_local_z","index":2,"range":[-1,1],"scale":32},
+    {"name":"yaw_rate","index":3,"range":[-1,1],"scale":8},
+    {"name":"grounded","index":4,"range":[0,1]},
+    {"name":"jump_ready","index":5,"range":[0,1]},
+    {"name":"checkpoint_local_x","index":6,"range":[-1,1],"scale":64},
+    {"name":"checkpoint_local_y","index":7,"range":[-1,1],"scale":32},
+    {"name":"checkpoint_local_z","index":8,"range":[-1,1],"scale":64},
+    {"name":"finish_local_x","index":9,"range":[-1,1],"scale":64},
+    {"name":"finish_local_y","index":10,"range":[-1,1],"scale":32},
+    {"name":"finish_local_z","index":11,"range":[-1,1],"scale":64},
+    {"name":"progress","index":12,"range":[0,1]},
+    {"name":"ray_forward","index":13,"range":[0,1],"scale":24},
+    {"name":"ray_forward_down","index":14,"range":[0,1],"scale":24},
+    {"name":"ray_down","index":15,"range":[0,1],"scale":12},
+    {"name":"ray_left_down","index":16,"range":[0,1],"scale":16},
+    {"name":"ray_right_down","index":17,"range":[0,1],"scale":16},
+    {"name":"previous_strafe","index":18,"range":[-1,1]},
+    {"name":"previous_forward","index":19,"range":[-1,1]},
+    {"name":"previous_yaw","index":20,"range":[-1,1]},
+    {"name":"previous_jump","index":21,"range":[0,1]}
+  ]
+}

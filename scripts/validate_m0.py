@@ -7,12 +7,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
 
-from obby_rl.config import config_sha256, validate_config  # noqa: E402
+from obby_rl.config import config_sha256, validate_config, validate_luau_config  # noqa: E402
 from obby_rl.protocol import validate_message  # noqa: E402
 
 
 def main() -> None:
     config = validate_config()
+    validate_luau_config(config)
     validate_message(
         {
             "protocol_version": "0.1.0",
