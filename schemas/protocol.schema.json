@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roblox-obby-rl.local/schemas/protocol.schema.json",
+  "title": "Obby RL Studio-Python message",
+  "oneOf": [
+    { "$ref": "#/$defs/resetRequest" },
+    { "$ref": "#/$defs/actionRequest" },
+    { "$ref": "#/$defs/stepResult" }
+  ],
+  "$defs": {
+    "envelope": {
+      "type": "object",
+      "required": ["protocol_version", "message_type", "request_id", "episode_id"],
+      "properties": {
+        "protocol_version": { "const": "0.1.0" },
+        "message_type": { "type": "string" },
+        "request_id": { "type": "string", "minLength": 1 },
+        "episode_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["strafe", "forward", "yaw", "jump"],
+      "properties": {
+        "strafe": { "type": "number", "minimum": -1, "maximum": 1 },
+        "forward": { "type": "number", "minimum": -1, "maximum": 1 },
+        "yaw": { "type": "number", "minimum": -1, "maximum": 1 },
+        "jump": { "type": "boolean" }
+      }
+    },
+    "observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "values"],
+      "properties": {
+        "schema": { "const": "obby-structured-v1" },
+        "values": { "type": "array", "items": { "type": "number" }, "minItems": 1 }
+      }
+    },
+    "resetRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        { "type": "object", "additionalProperties": false,
+          "required": ["protocol_version", "message_type", "request_id", "episode_id", "course_seed", "generator_version"],
+          "properties": {
+            "protocol_version": { "const": "0.1.0" }, "message_type": { "const": "reset_request" },
+            "request_id": { "type": "string", "minLength": 1 }, "episode_id": { "type": "string", "minLength": 1 },
+            "course_seed": { "type": "integer", "minimum": 0 }, "generator_version": { "const": "0.1.0" }
+          }
+        }
+      ]
+    },
+    "actionRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        { "type": "object", "additionalProperties": false,
+          "required": ["protocol_version", "message_type", "request_id", "episode_id", "step_id", "action"],
+          "properties": {
+            "protocol_version": { "const": "0.1.0" }, "message_type": { "const": "action_request" },
+            "request_id": { "type": "string", "minLength": 1 }, "episode_id": { "type": "string", "minLength": 1 },
+            "step_id": { "type": "integer", "minimum": 0 }, "action": { "$ref": "#/$defs/action" }
+          }
+        }
+      ]
+    },
+    "stepResult": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        { "type": "object", "additionalProperties": false,
+          "required": ["protocol_version", "message_type", "request_id", "episode_id", "step_id", "course_seed", "observation", "reward", "reward_components", "terminated", "truncated"],
+          "properties": {
+            "protocol_version": { "const": "0.1.0" }, "message_type": { "const": "step_result" },
+            "request_id": { "type": "string", "minLength": 1 }, "episode_id": { "type": "string", "minLength": 1 },
+            "step_id": { "type": "integer", "minimum": 0 }, "course_seed": { "type": "integer", "minimum": 0 },
+            "observation": { "$ref": "#/$defs/observation" }, "reward": { "type": "number" },
+            "reward_components": { "type": "object", "additionalProperties": { "type": "number" } },
+            "terminated": { "type": "boolean" }, "truncated": { "type": "boolean" }
+          }
+        }
+      ]
+    }
+  }
+}

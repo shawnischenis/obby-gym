@@ -1,0 +1,39 @@
+{
+  "$schema": "../schemas/config.schema.json",
+  "config_version": "0.1.0",
+  "experiment": {
+    "name": "m0_smoke",
+    "master_seed": 20260716,
+    "output_root": "runs"
+  },
+  "roblox": {
+    "avatar_rig": "R15",
+    "controller": "HumanoidMove",
+    "decision_hz": 20,
+    "action_repeat_ticks": 3,
+    "episode_time_limit_seconds": 20,
+    "fall_y": -25,
+    "workspace_gravity": 196.2
+  },
+  "bridge": {
+    "transport": "http",
+    "base_url": "http://127.0.0.1:8765",
+    "local_only": true,
+    "request_timeout_seconds": 5,
+    "rollout_batch_steps": 32,
+    "protocol_version": "0.1.0"
+  },
+  "schemas": {
+    "observation": "obby-structured-v1",
+    "action": "obby-action-v1"
+  },
+  "generator": {
+    "version": "0.1.0",
+    "seed_partitions": {
+      "train": { "start": 0, "count": 10000 },
+      "validation": { "start": 1000000, "count": 1000 },
+      "test": { "start": 2000000, "count": 1000 },
+      "stress": { "start": 3000000, "count": 100 }
+    }
+  }
+}

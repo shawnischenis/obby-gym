@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roblox-obby-rl.local/schemas/config.schema.json",
+  "title": "Obby RL experiment configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["config_version", "experiment", "roblox", "bridge", "schemas", "generator"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "config_version": { "const": "0.1.0" },
+    "experiment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "master_seed", "output_root"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "master_seed": { "type": "integer", "minimum": 0 },
+        "output_root": { "type": "string", "minLength": 1 }
+      }
+    },
+    "roblox": {
+      "type": "object", "additionalProperties": false,
+      "required": ["avatar_rig", "controller", "decision_hz", "action_repeat_ticks", "episode_time_limit_seconds", "fall_y", "workspace_gravity"],
+      "properties": {
+        "avatar_rig": { "const": "R15" },
+        "controller": { "const": "HumanoidMove" },
+        "decision_hz": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "action_repeat_ticks": { "type": "integer", "minimum": 1 },
+        "episode_time_limit_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "fall_y": { "type": "number" },
+        "workspace_gravity": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "bridge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transport", "base_url", "local_only", "request_timeout_seconds", "rollout_batch_steps", "protocol_version"],
+      "properties": {
+        "transport": { "const": "http" },
+        "base_url": { "type": "string", "pattern": "^http://(127\\.0\\.0\\.1|localhost):[0-9]+$" },
+        "local_only": { "const": true },
+        "request_timeout_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "rollout_batch_steps": { "type": "integer", "minimum": 1 },
+        "protocol_version": { "const": "0.1.0" }
+      }
+    },
+    "schemas": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observation", "action"],
+      "properties": {
+        "observation": { "const": "obby-structured-v1" },
+        "action": { "const": "obby-action-v1" }
+      }
+    },
+    "generator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "seed_partitions"],
+      "properties": {
+        "version": { "const": "0.1.0" },
+        "seed_partitions": {
+          "type": "object", "additionalProperties": false,
+          "required": ["train", "validation", "test", "stress"],
+          "properties": {
+            "train": { "$ref": "#/$defs/seedPartition" },
+            "validation": { "$ref": "#/$defs/seedPartition" },
+            "test": { "$ref": "#/$defs/seedPartition" },
+            "stress": { "$ref": "#/$defs/seedPartition" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "seedPartition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start", "count"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

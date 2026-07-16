@@ -1,0 +1,22 @@
+--!strict
+
+return table.freeze({
+	CONFIG_VERSION = "0.1.0",
+	PROTOCOL_VERSION = "0.1.0",
+	GENERATOR_VERSION = "0.1.0",
+	OBSERVATION_SCHEMA = "obby-structured-v1",
+	ACTION_SCHEMA = "obby-action-v1",
+
+	AVATAR_RIG = Enum.HumanoidRigType.R15,
+	CONTROLLER = "HumanoidMove",
+	DECISION_HZ = 20,
+	ACTION_REPEAT_TICKS = 3,
+	EPISODE_TIME_LIMIT_SECONDS = 20,
+	FALL_Y = -25,
+	WORKSPACE_GRAVITY = 196.2,
+
+	BRIDGE_BASE_URL = "http://127.0.0.1:8765",
+	BRIDGE_LOCAL_ONLY = true,
+	REQUEST_TIMEOUT_SECONDS = 5,
+	ROLLOUT_BATCH_STEPS = 32,
+})
