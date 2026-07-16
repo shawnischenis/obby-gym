@@ -5,6 +5,7 @@ Research scaffold for training Roblox obstacle-course agents in Python and expor
 The active roadmap is [ROBLOX_OBBY_RL_PLAN.md](ROBLOX_OBBY_RL_PLAN.md). M0 establishes reproducible configuration, protocol contracts, a Rojo project, and local validation. The earlier generic MCP build-plan experiment is preserved under `legacy/mcp_build_skeleton/`; it is not part of the active runtime.
 
 M1 implementation status and the remaining live-playtest gates are tracked in [docs/M1_STATUS.md](docs/M1_STATUS.md).
+The completed procedural generator milestone is recorded in [docs/M2_STATUS.md](docs/M2_STATUS.md).
 
 ## Live Studio bridge
 

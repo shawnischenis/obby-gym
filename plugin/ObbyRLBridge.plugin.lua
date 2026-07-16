@@ -11,6 +11,7 @@ toggle.ClickableWhenViewportHidden = true
 
 local enabled = true
 local generation = 0
+local ACTION_REPEAT_TICKS = 3
 
 local function exchange(payload: any): (boolean, any)
 	local success, result = pcall(function()
@@ -42,11 +43,11 @@ local function waitForRuntime(): (any, any, any, any, Model)
 		return nil
 	end
 	local AgentHarness = require(folder:WaitForChild("AgentHarness"))
-	local CourseGenerator = require(folder:WaitForChild("CourseGenerator"))
-	local GapCourseConfig = require(folder:WaitForChild("GapCourseConfig"))
-	local manifest = CourseGenerator.manifest(0, GapCourseConfig)
+	local CourseGenerator = require(folder:WaitForChild("ProceduralCourseGenerator"))
+	local CourseConfig = require(folder:WaitForChild("ProceduralCourseConfig"))
+	local manifest = CourseGenerator.manifest(0, CourseConfig)
 	local state = AgentHarness.new(character, manifest)
-	return AgentHarness, CourseGenerator, GapCourseConfig, state, character
+	return AgentHarness, CourseGenerator, CourseConfig, state, character
 end
 
 local function resultPayload(
@@ -57,8 +58,11 @@ local function resultPayload(
 	state: any,
 	reward: number,
 	terminated: boolean,
-	seed: number
+	seed: number,
+	commandStarted: number,
+	hazardRecovered: boolean?
 ): any
+	local course = workspace:FindFirstChild("GeneratedCourseV2")
 	return {
 		protocol_version = "0.1.0",
 		message_type = "step_result",
@@ -69,7 +73,15 @@ local function resultPayload(
 		reward = reward,
 		terminated = terminated,
 		truncated = false,
-		info = { course_seed = seed },
+		info = {
+			course_seed = seed,
+			course_signature = if course then course:GetAttribute("Signature") else nil,
+			course_instances = if course then #course:GetDescendants() else 0,
+			checkpoint_index = state.checkpointIndex,
+			checkpoint_count = #state.checkpoints,
+			hazard_recovered = hazardRecovered == true,
+			studio_command_seconds = os.clock() - commandStarted,
+		},
 	}
 end
 
@@ -81,7 +93,7 @@ local function runWorker(myGeneration: number)
 			task.wait(0.25)
 			continue
 		end
-		local AgentHarness, CourseGenerator, GapCourseConfig, state, character =
+		local AgentHarness, CourseGenerator, CourseConfig, state, character =
 			runtime[1], runtime[2], runtime[3], runtime[4], runtime[5]
 		local outgoing: any = { protocol_version = "0.1.0", message_type = "worker_ready" }
 		local lastProgress = 0
@@ -100,8 +112,9 @@ local function runWorker(myGeneration: number)
 				continue
 			end
 			if command.message_type == "reset_command" then
+				local commandStarted = os.clock()
 				seed = command.course_seed
-				local manifest = CourseGenerator.build(seed, GapCourseConfig, workspace)
+				local manifest = CourseGenerator.build(seed, CourseConfig, workspace)
 				state = AgentHarness.new(character, manifest)
 				AgentHarness.reset(state)
 				lastProgress = 0
@@ -113,22 +126,35 @@ local function runWorker(myGeneration: number)
 					state,
 					0,
 					false,
-					seed
+					seed,
+					commandStarted,
+					false
 				)
 			elseif command.message_type == "action_command" then
+				local commandStarted = os.clock()
 				AgentHarness.applyAction(state, command.action)
 				local elapsed = 0
 				repeat
 					elapsed += RunService.Heartbeat:Wait()
-				until elapsed >= 3 / 20
+				until elapsed >= ACTION_REPEAT_TICKS / 60
 				local observation = AgentHarness.observe(state)
 				local progress = observation[13]
-				local terminated = progress >= 0.98 or state.root.Position.Y < -25
+				local reachedCheckpoint = AgentHarness.advanceCheckpoint(state)
+				-- Detect before the character body touches the physical plane. Its root stays
+				-- several studs above the contact point, so checking the plane center is too late.
+				local fell = state.root.Position.Y < CourseConfig.killPlaneY + 8
+				local terminated = progress >= 0.98
 				local reward = (progress - lastProgress) - 0.001
-				if progress >= 0.98 then
+				if reachedCheckpoint then
+					reward += 0.1
+				end
+				if terminated then
 					reward += 1
-				elseif state.root.Position.Y < -25 then
+				elseif fell then
 					reward -= 1
+					AgentHarness.recover(state)
+					observation = AgentHarness.observe(state)
+					progress = observation[13]
 				end
 				lastProgress = progress
 				outgoing = resultPayload(
@@ -139,7 +165,9 @@ local function runWorker(myGeneration: number)
 					state,
 					reward,
 					terminated,
-					seed
+					seed,
+					commandStarted,
+					fell
 				)
 			else
 				outgoing = { protocol_version = "0.1.0", message_type = "worker_ready" }

@@ -10,6 +10,7 @@ return table.freeze({
 	AVATAR_RIG = Enum.HumanoidRigType.R15,
 	CONTROLLER = "HumanoidMove",
 	DECISION_HZ = 20,
+	PHYSICS_HZ = 60,
 	ACTION_REPEAT_TICKS = 3,
 	EPISODE_TIME_LIMIT_SECONDS = 20,
 	FALL_Y = -25,

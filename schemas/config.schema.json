@@ -19,11 +19,12 @@
     },
     "roblox": {
       "type": "object", "additionalProperties": false,
-      "required": ["avatar_rig", "controller", "decision_hz", "action_repeat_ticks", "episode_time_limit_seconds", "fall_y", "workspace_gravity"],
+      "required": ["avatar_rig", "controller", "decision_hz", "physics_hz", "action_repeat_ticks", "episode_time_limit_seconds", "fall_y", "workspace_gravity"],
       "properties": {
         "avatar_rig": { "const": "R15" },
         "controller": { "const": "HumanoidMove" },
         "decision_hz": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "physics_hz": { "type": "integer", "minimum": 30, "maximum": 240 },
         "action_repeat_ticks": { "type": "integer", "minimum": 1 },
         "episode_time_limit_seconds": { "type": "number", "exclusiveMinimum": 0 },
         "fall_y": { "type": "number" },

@@ -7,7 +7,7 @@ These defaults are locked for the first end-to-end environment and may only chan
 | Avatar | R15 | Current standard Roblox rig and representative humanoid physics |
 | Controller | `Humanoid:Move()` | Smallest path to a working agent harness; custom physics can be evaluated later |
 | Decision rate | 20 Hz | Responsive enough for jumping while keeping bridge/inference load bounded |
-| Action repeat | 3 decision ticks | Reduces transport pressure; M1 will measure whether this harms control |
+| Action repeat | 3 physics heartbeats (~50 ms at 60 Hz) | Targets a 20 Hz environment decision rate while holding each action across physics updates |
 | Episode limit | 20 seconds | Appropriate for the initial short course and bounds stalled episodes |
 | Transport | Studio plugin over loopback HTTP | Roblox officially supports localhost communication from plugins; the playtest experience itself does not own the external connection |
 | Observation cap | 128 floats | Initial engineering budget; the exact v1 layout is an M1 deliverable |

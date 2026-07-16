@@ -6,13 +6,13 @@ local RunService = game:GetService("RunService")
 
 local AgentHarness = require(ReplicatedStorage.ObbyRL.AgentHarness)
 local Config = require(ReplicatedStorage.ObbyRL.Config)
-local CourseGenerator = require(ReplicatedStorage.ObbyRL.CourseGenerator)
-local GapCourseConfig = require(ReplicatedStorage.ObbyRL.GapCourseConfig)
+local CourseGenerator = require(ReplicatedStorage.ObbyRL.ProceduralCourseGenerator)
+local CourseConfig = require(ReplicatedStorage.ObbyRL.ProceduralCourseConfig)
 local ResetController = require(ReplicatedStorage.ObbyRL.ResetController)
 
 workspace.Gravity = Config.WORKSPACE_GRAVITY
-local manifest = CourseGenerator.build(0, GapCourseConfig, workspace)
-local course = workspace:WaitForChild("GeneratedCourse")
+local manifest = CourseGenerator.build(0, CourseConfig, workspace)
+local course = workspace:WaitForChild("GeneratedCourseV2")
 local controllersByCharacter: { [Model]: ResetController.Controller } = {}
 
 local function connectKillPlane(model: Model)
@@ -22,7 +22,8 @@ local function connectKillPlane(model: Model)
 		if character then
 			local controller = controllersByCharacter[character]
 			if controller then
-				ResetController.reset(controller, "hazard")
+				AgentHarness.recover(controller.state)
+				character:SetAttribute("LastResetReason", "hazard")
 			end
 		end
 	end)
@@ -30,10 +31,23 @@ end
 
 connectKillPlane(course)
 
+for index = 1, CourseConfig.stageCount do
+	local checkpoint = course:WaitForChild(string.format("Checkpoint_%02d", index)) :: BasePart
+	checkpoint.Touched:Connect(function(hit: BasePart)
+		local character = hit:FindFirstAncestorOfClass("Model")
+		local controller = if character then controllersByCharacter[character] else nil
+		if controller then
+			AgentHarness.advanceCheckpoint(controller.state)
+		end
+	end)
+end
+
 local function onCharacter(character: Model)
 	local state = AgentHarness.new(character, manifest)
 	AgentHarness.reset(state)
-	controllersByCharacter[character] = ResetController.new(state, Config.FALL_Y)
+	-- The plugin observes the configured kill-plane crossing to assign the RL penalty.
+	-- Keep this heartbeat reset only as a deep-fall safety net so it cannot win that race.
+	controllersByCharacter[character] = ResetController.new(state, CourseConfig.killPlaneY - 25)
 	character.Destroying:Once(function()
 		controllersByCharacter[character] = nil
 	end)

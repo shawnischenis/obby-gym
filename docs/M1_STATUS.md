@@ -17,9 +17,12 @@
 ## Live-loop results
 
 - [x] Python transport connects to a running playtest through the installed Studio plugin.
-- [x] First benchmark: 100 random-policy steps in 23.193 seconds, or **4.31 environment steps/second**.
-- [ ] Run 1,000 live resets and check for leaked characters/instances or protocol desynchronization.
+- [x] Initial benchmark: 100 random-policy steps in 23.193 seconds, or **4.31 environment steps/second**.
+- [x] Physics-timing fix benchmark: 100 steps in 13.349 seconds, or **7.49 environment steps/second**.
+- [x] 1,000 live resets completed without protocol desynchronization.
+- [x] Reset soak: 205.762 seconds total, 4.86 resets/s, 85.8 ms median, 101.9 ms p95.
+- [x] Generated-course descendant count remained exactly `4` across all 1,000 resets; no geometry leak detected.
 
-The measured throughput is below the M0 gate of 20 environment steps/second per worker. Before PPO training, profile the 150 ms action window and HTTP/plugin overhead, then decide between increasing simulation/action cadence efficiency, batching multiple agents, or running parallel Studio workers.
+The optimized single-agent throughput remains below the M0 gate of 20 environment steps/second per worker. A trial with HTTP/1.1 keep-alive regressed to 5.52 steps/s and was reverted. The next throughput strategy should vectorize multiple agents per plugin exchange or run parallel Studio workers; further single-request tuning is unlikely to close the gap.
 
 The bridge runs in `plugin/ObbyRLBridge.plugin.lua`, because Roblox supports local-machine HTTP for Studio plugins. The playtest experience owns course physics and reusable harness modules but does not make external requests.

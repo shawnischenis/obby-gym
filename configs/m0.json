@@ -10,6 +10,7 @@
     "avatar_rig": "R15",
     "controller": "HumanoidMove",
     "decision_hz": 20,
+    "physics_hz": 60,
     "action_repeat_ticks": 3,
     "episode_time_limit_seconds": 20,
     "fall_y": -25,

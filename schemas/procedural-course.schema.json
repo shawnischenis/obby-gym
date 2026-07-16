@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://roblox-obby-rl.local/schemas/procedural-course.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generator_version", "stage_count", "platform_width", "platform_length", "platform_height", "gap_range", "offset_range", "beam_width_range", "beam_length_range", "stair_count_range", "stair_run", "stair_rise", "max_jump_gap", "max_lateral_offset", "max_oracle_jump_distance", "min_oracle_beam_width", "max_course_rise", "max_generation_attempts", "kill_plane_y"],
+  "properties": {
+    "$schema": {"type":"string"},
+    "schema_version": {"const":"procedural-course-v1"},
+    "generator_version": {"const":"0.3.0"},
+    "stage_count": {"type":"integer","minimum":1,"maximum":100},
+    "platform_width": {"type":"number","minimum":4},
+    "platform_length": {"type":"number","minimum":4},
+    "platform_height": {"type":"number","exclusiveMinimum":0},
+    "gap_range": {"$ref":"#/$defs/range"},
+    "offset_range": {"$ref":"#/$defs/range"},
+    "beam_width_range": {"$ref":"#/$defs/range"},
+    "beam_length_range": {"$ref":"#/$defs/range"},
+    "stair_count_range": {"type":"array","prefixItems":[{"type":"integer","minimum":1},{"type":"integer","minimum":1}],"items":false},
+    "stair_run": {"type":"number","exclusiveMinimum":0},
+    "stair_rise": {"type":"number","exclusiveMinimum":0},
+    "max_jump_gap": {"type":"number","exclusiveMinimum":0},
+    "max_lateral_offset": {"type":"number","minimum":0},
+    "max_oracle_jump_distance": {"type":"number","exclusiveMinimum":0},
+    "min_oracle_beam_width": {"type":"number","exclusiveMinimum":0},
+    "max_course_rise": {"type":"number","exclusiveMinimum":0},
+    "max_generation_attempts": {"type":"integer","minimum":1,"maximum":1000},
+    "kill_plane_y": {"type":"number"}
+  },
+  "$defs": {
+    "range": {"type":"array","prefixItems":[{"type":"number"},{"type":"number"}],"items":false}
+  }
+}

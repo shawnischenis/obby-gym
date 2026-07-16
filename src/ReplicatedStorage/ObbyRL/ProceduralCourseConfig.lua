@@ -1,0 +1,27 @@
+--!strict
+
+return table.freeze({
+	stageCount = 8,
+	platformWidth = 12,
+	platformLength = 12,
+	platformHeight = 1,
+	gapMin = 3.5,
+	gapMax = 7,
+	offsetMin = -5,
+	offsetMax = 5,
+	beamWidthMin = 1.5,
+	beamWidthMax = 3,
+	beamLengthMin = 8,
+	beamLengthMax = 16,
+	stairCountMin = 3,
+	stairCountMax = 6,
+	stairRun = 3,
+	stairRise = 1,
+	maxJumpGap = 8,
+	maxLateralOffset = 6,
+	maxOracleJumpDistance = 9,
+	minOracleBeamWidth = 1.25,
+	maxCourseRise = 16,
+	maxGenerationAttempts = 32,
+	killPlaneY = -25,
+})
