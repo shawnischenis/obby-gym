@@ -1,0 +1,25 @@
+{
+  "experiment": "m3_fixed_ppo",
+  "master_seed": 20260716,
+  "course_seed": 0,
+  "total_timesteps": 100000,
+  "episode_max_steps": 400,
+  "ppo": {
+    "policy": "MlpPolicy",
+    "learning_rate": 0.0003,
+    "n_steps": 256,
+    "batch_size": 64,
+    "n_epochs": 10,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "ent_coef": 0.01,
+    "policy_layers": [128, 128]
+  },
+  "checkpoint_every_steps": 10000,
+  "evaluation": {
+    "fixed_episodes": 20,
+    "validation_seed_start": 1000000,
+    "validation_seed_count": 100
+  }
+}

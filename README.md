@@ -6,6 +6,7 @@ The active roadmap is [ROBLOX_OBBY_RL_PLAN.md](ROBLOX_OBBY_RL_PLAN.md). M0 estab
 
 M1 implementation status and the remaining live-playtest gates are tracked in [docs/M1_STATUS.md](docs/M1_STATUS.md).
 The completed procedural generator milestone is recorded in [docs/M2_STATUS.md](docs/M2_STATUS.md).
+Fixed-course PPO baseline progress is tracked in [docs/M3_STATUS.md](docs/M3_STATUS.md).
 
 ## Live Studio bridge
 
