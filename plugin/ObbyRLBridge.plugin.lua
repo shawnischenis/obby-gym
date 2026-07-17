@@ -15,6 +15,7 @@ local ACTION_REPEAT_TICKS = 3
 local RESET_SETTLE_TIMEOUT = 1
 local RESET_STABLE_TICKS = 3
 local VECTOR_LANE_SPACING = 400
+local MAX_ACTION_HOLD_SECONDS = 0.25
 
 local function settleCharacter(AgentHarness: any, state: any): number
 	local started = os.clock()
@@ -162,7 +163,13 @@ local function cloneAgent(character: Model, parent: Instance, index: number): Mo
 	return clone
 end
 
-local function vectorLaneResult(AgentHarness: any, lane: any, action: any, elapsed: number): any
+local function vectorLaneResult(
+	AgentHarness: any,
+	lane: any,
+	action: any,
+	elapsed: number,
+	heldActions: { [any]: any }
+): any
 	local observation = AgentHarness.observe(lane.state)
 	local progress = observation[13]
 	local checkpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
@@ -184,6 +191,9 @@ local function vectorLaneResult(AgentHarness: any, lane: any, action: any, elaps
 		checkpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
 	end
 	if fell and not terminated then
+		heldActions[lane.state] = nil
+		lane.actionStartedAt = nil
+		AgentHarness.stop(lane.state)
 		AgentHarness.recover(lane.state)
 		settleCharacter(AgentHarness, lane.state)
 		observation = AgentHarness.observe(lane.state)
@@ -192,7 +202,11 @@ local function vectorLaneResult(AgentHarness: any, lane: any, action: any, elaps
 	end
 	lane.lastProgress = progress
 	lane.lastCheckpointDistance = checkpointDistance
-	AgentHarness.stop(lane.state)
+	if terminated then
+		heldActions[lane.state] = nil
+		lane.actionStartedAt = nil
+		AgentHarness.stop(lane.state)
+	end
 	return {
 		observation = { schema = "obby-structured-v1", values = observation },
 		reward = reward,
@@ -204,6 +218,8 @@ local function vectorLaneResult(AgentHarness: any, lane: any, action: any, elaps
 			checkpoint_index = lane.state.checkpointIndex,
 			hazard_recovered = fell,
 			hold_seconds = elapsed,
+			action_lease_seconds = MAX_ACTION_HOLD_SECONDS,
+			previous_action_total_seconds = lane.previousActionTotalSeconds or 0,
 			reward_components = {
 				checkpoint = checkpointReward,
 				progress = progressReward,
@@ -233,6 +249,29 @@ local function runWorker(myGeneration: number)
 		local seed = 0
 		local curriculumStage = 4
 		local vectorLanes: { any } = {}
+		local heldActions: { [any]: any } = {}
+		local lastActionStartedAt: number? = nil
+		local holdConnection = RunService.Heartbeat:Connect(function()
+			for heldState, held in heldActions do
+				if heldState.character.Parent then
+					if os.clock() < held.expiresAt then
+						AgentHarness.refreshMovement(heldState, held.action)
+					else
+						AgentHarness.stop(heldState)
+						heldActions[heldState] = nil
+					end
+				else
+					heldActions[heldState] = nil
+				end
+			end
+		end)
+		local function clearHeldActions()
+			for heldState in heldActions do
+				AgentHarness.stop(heldState)
+			end
+			table.clear(heldActions)
+			lastActionStartedAt = nil
+		end
 		print("[ObbyRL Plugin] playtest found; connecting to Python")
 
 		while
@@ -248,6 +287,7 @@ local function runWorker(myGeneration: number)
 			end
 			if command.message_type == "vector_reset_command" then
 				local commandStarted = os.clock()
+				clearHeldActions()
 				local vectorRoot = workspace:FindFirstChild("ObbyRLVectorLanes")
 				if vectorRoot then
 					vectorRoot:Destroy()
@@ -274,6 +314,8 @@ local function runWorker(myGeneration: number)
 						state = laneState,
 						lastProgress = 0,
 						lastCheckpointDistance = (laneState.root.Position - laneState.checkpoint).Magnitude,
+						actionStartedAt = nil,
+						previousActionTotalSeconds = 0,
 					})
 				end
 				-- The real player is only a rig template in vector mode. Park it outside
@@ -317,6 +359,10 @@ local function runWorker(myGeneration: number)
 					},
 				}
 			elseif command.message_type == "vector_reset_lanes_command" then
+				clearHeldActions()
+				for _, lane in vectorLanes do
+					lane.actionStartedAt = nil
+				end
 				assert(
 					#command.course_seeds == #vectorLanes,
 					"vector seed count does not match lanes"
@@ -348,6 +394,8 @@ local function runWorker(myGeneration: number)
 							state = laneState,
 							lastProgress = 0,
 							lastCheckpointDistance = 0,
+							actionStartedAt = nil,
+							previousActionTotalSeconds = 0,
 						}
 						table.insert(resetStates, laneState)
 					end
@@ -380,7 +428,15 @@ local function runWorker(myGeneration: number)
 				local commandStarted = os.clock()
 				assert(#command.actions == #vectorLanes, "vector action count does not match lanes")
 				for index, lane in vectorLanes do
+					lane.previousActionTotalSeconds = if lane.actionStartedAt
+						then commandStarted - lane.actionStartedAt
+						else 0
+					lane.actionStartedAt = commandStarted
 					AgentHarness.applyAction(lane.state, command.actions[index])
+					heldActions[lane.state] = {
+						action = command.actions[index],
+						expiresAt = commandStarted + MAX_ACTION_HOLD_SECONDS,
+					}
 				end
 				local elapsed = 0
 				repeat
@@ -395,7 +451,13 @@ local function runWorker(myGeneration: number)
 				for index, lane in vectorLanes do
 					table.insert(
 						results,
-						vectorLaneResult(AgentHarness, lane, command.actions[index], elapsed)
+						vectorLaneResult(
+							AgentHarness,
+							lane,
+							command.actions[index],
+							elapsed,
+							heldActions
+						)
 					)
 				end
 				outgoing = {
@@ -413,6 +475,7 @@ local function runWorker(myGeneration: number)
 				}
 			elseif command.message_type == "reset_command" then
 				local commandStarted = os.clock()
+				clearHeldActions()
 				local playerRoot = character:FindFirstChild("HumanoidRootPart")
 				if playerRoot and playerRoot:IsA("BasePart") then
 					playerRoot.Anchored = false
@@ -453,10 +516,18 @@ local function runWorker(myGeneration: number)
 				)
 			elseif command.message_type == "action_command" then
 				local commandStarted = os.clock()
+				local previousActionTotalSeconds = if lastActionStartedAt
+					then commandStarted - lastActionStartedAt
+					else 0
 				local positionBefore = state.root.Position
 				local checkpointBefore = state.checkpoint
 				local distanceBefore = (positionBefore - checkpointBefore).Magnitude
 				AgentHarness.applyAction(state, command.action)
+				heldActions[state] = {
+					action = command.action,
+					expiresAt = commandStarted + MAX_ACTION_HOLD_SECONDS,
+				}
+				lastActionStartedAt = commandStarted
 				local elapsed = 0
 				repeat
 					elapsed += RunService.Heartbeat:Wait()
@@ -492,6 +563,8 @@ local function runWorker(myGeneration: number)
 					checkpointDistance = (state.root.Position - state.checkpoint).Magnitude
 				end
 				if fell and not terminated then
+					heldActions[state] = nil
+					AgentHarness.stop(state)
 					AgentHarness.recover(state)
 					settleCharacter(AgentHarness, state)
 					observation = AgentHarness.observe(state)
@@ -500,7 +573,10 @@ local function runWorker(myGeneration: number)
 				end
 				lastProgress = progress
 				lastCheckpointDistance = checkpointDistance
-				AgentHarness.stop(state)
+				if terminated then
+					heldActions[state] = nil
+					AgentHarness.stop(state)
+				end
 				outgoing = resultPayload(
 					command.request_id,
 					command.episode_id,
@@ -523,6 +599,8 @@ local function runWorker(myGeneration: number)
 					{
 						action = command.action,
 						hold_seconds = elapsed,
+						action_lease_seconds = MAX_ACTION_HOLD_SECONDS,
+						previous_action_total_seconds = previousActionTotalSeconds,
 						distance_before = distanceBefore,
 						distance_after = (positionAfter - checkpointBefore).Magnitude,
 						position_before = { positionBefore.X, positionBefore.Y, positionBefore.Z },
@@ -535,6 +613,8 @@ local function runWorker(myGeneration: number)
 				task.wait(0.05)
 			end
 		end
+		clearHeldActions()
+		holdConnection:Disconnect()
 	end
 end
 

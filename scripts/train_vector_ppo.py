@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-steps", type=int)
     parser.add_argument("--curriculum-stage", type=int, choices=range(1, 5))
     parser.add_argument("--init-model", type=Path)
+    parser.add_argument("--smoothness-weight", type=float, default=0.0)
     parser.add_argument("--run-name")
     return parser.parse_args()
 
@@ -48,6 +49,7 @@ def main() -> None:
         "num_envs": num_envs,
         "curriculum_stage": int(args.curriculum_stage or config["curriculum_stage"]),
         "initial_model": str(args.init_model) if args.init_model else None,
+        "smoothness_weight": float(args.smoothness_weight),
         "total_timesteps": timesteps,
         "ppo": {**config["ppo"], "n_steps": n_steps, "batch_size": batch_size},
     }
@@ -67,6 +69,7 @@ def main() -> None:
             jump_threshold=float(mapping["jump_threshold"]),
             jump_cooldown_steps=int(mapping["jump_cooldown_steps"]),
             yaw_scale=float(mapping["yaw_scale"]),
+            smoothness_weight=float(args.smoothness_weight),
         )
         vector_env = RobloxBatchedVecEnv(
             batch,

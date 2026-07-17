@@ -38,9 +38,17 @@ def evaluate_seeds(
         episode_return = 0.0
         length = 0
         hazards = 0
+        previous_action: np.ndarray | None = None
+        action_variation = 0.0
+        direction_reversals = 0
         final_info: dict[str, Any] = {}
         while not terminated and not truncated:
             action, _ = policy.predict(observation, deterministic=True)
+            checked_action = np.asarray(action, dtype=np.float32)
+            if previous_action is not None:
+                action_variation += float(np.abs(checked_action[:3] - previous_action[:3]).sum())
+                direction_reversals += int(np.any(checked_action[:2] * previous_action[:2] < -0.05))
+            previous_action = checked_action.copy()
             observation, reward, terminated, truncated, info = env.step(action)
             minimum_distance = min(minimum_distance, checkpoint_distance(observation))
             episode_return += float(reward)
@@ -59,6 +67,8 @@ def evaluate_seeds(
                 "initial_checkpoint_distance": initial_distance,
                 "minimum_checkpoint_distance": minimum_distance,
                 "final_checkpoint_distance": checkpoint_distance(observation),
+                "mean_action_variation": action_variation / max(1, length - 1),
+                "direction_reversals": direction_reversals,
             }
         )
     count = len(episodes)
@@ -72,4 +82,8 @@ def evaluate_seeds(
         "mean_length": sum(int(item["length"]) for item in episodes) / count,
         "mean_hazards": sum(int(item["hazards"]) for item in episodes) / count,
         "mean_checkpoint_index": sum(int(item["checkpoint_index"]) for item in episodes) / count,
+        "mean_action_variation": sum(float(item["mean_action_variation"]) for item in episodes)
+        / count,
+        "mean_direction_reversals": sum(int(item["direction_reversals"]) for item in episodes)
+        / count,
     }

@@ -27,4 +27,6 @@ The vector path runs eight independent humanoid/course pairs inside one Roblox S
 
 The first live batch smoke produced 272 transitions in 4.835 seconds, or 56.3 aggregate transitions/second, with ordered lane IDs 1 through 8 and observation shape `(8, 22)`. It stopped after 34 batches because the scripted forward action completed Stage 1, not because of a transport failure.
 
+The end-to-end PPO smoke completed one 256-transition rollout (eight lanes by 32 steps) at 58 aggregate FPS and saved `runs/m3-vector-stage1-smoke/final_model.zip`. A focused auto-reset test then moved only lane 1: it finished and reset at batch step 49 while lanes 2 through 8 remained active. The terminal observation was preserved and maximum observation drift among the seven stopped lanes was `0.001279`.
+
 PPO's `n_steps` is per lane. With eight lanes, `--n-steps 32` yields a 256-transition rollout. Total timesteps and checkpoint intervals remain aggregate transition counts.

@@ -27,6 +27,7 @@ class RobloxObbyBatch:
         jump_threshold: float = DEFAULT_JUMP_THRESHOLD,
         jump_cooldown_steps: int = DEFAULT_JUMP_COOLDOWN_STEPS,
         yaw_scale: float = 1.0,
+        smoothness_weight: float = 0.0,
     ) -> None:
         if num_envs < 1:
             raise ValueError("num_envs must be positive")
@@ -35,8 +36,13 @@ class RobloxObbyBatch:
         self.jump_threshold = jump_threshold
         self.jump_cooldown_steps = jump_cooldown_steps
         self.yaw_scale = yaw_scale
+        if smoothness_weight < 0:
+            raise ValueError("smoothness_weight must be non-negative")
+        self.smoothness_weight = float(smoothness_weight)
         self._jump_active = np.zeros(num_envs, dtype=np.bool_)
         self._jump_cooldown = np.zeros(num_envs, dtype=np.int32)
+        self._previous_movement = np.zeros((num_envs, 2), dtype=np.float32)
+        self._has_previous_movement = np.zeros(num_envs, dtype=np.bool_)
 
     @staticmethod
     def _observation(result: dict[str, Any]) -> np.ndarray:
@@ -47,6 +53,8 @@ class RobloxObbyBatch:
             raise ValueError(f"expected {self.num_envs} seeds, got {len(seeds)}")
         self._jump_active.fill(False)
         self._jump_cooldown.fill(0)
+        self._previous_movement.fill(0)
+        self._has_previous_movement.fill(False)
         results = self.transport.vector_reset(seeds=seeds)
         observations = np.stack([self._observation(dict(result)) for result in results])
         infos = [dict(result.get("info", {})) for result in results]
@@ -78,9 +86,21 @@ class RobloxObbyBatch:
         results = self.transport.vector_step(commands)
         observations = np.stack([self._observation(dict(result)) for result in results])
         rewards = np.asarray([result["reward"] for result in results], dtype=np.float32)
+        movement_delta = np.abs(checked[:, :2] - self._previous_movement).sum(axis=1)
+        smoothness_penalty = np.where(
+            self._has_previous_movement, -self.smoothness_weight * movement_delta, 0.0
+        ).astype(np.float32)
+        rewards += smoothness_penalty
+        infos = [dict(result.get("info", {})) for result in results]
+        for index, info in enumerate(infos):
+            components = dict(info.get("reward_components", {}))
+            components["smoothness"] = float(smoothness_penalty[index])
+            info["reward_components"] = components
+            info["movement_action_delta"] = float(movement_delta[index])
+        self._previous_movement[:] = checked[:, :2]
+        self._has_previous_movement.fill(True)
         terminated = np.asarray([result["terminated"] for result in results], dtype=np.bool_)
         truncated = np.asarray([result["truncated"] for result in results], dtype=np.bool_)
-        infos = [dict(result.get("info", {})) for result in results]
         assert observations.shape == (self.num_envs, OBSERVATION_SIZE)
         return observations, rewards, terminated, truncated, infos
 
@@ -92,6 +112,8 @@ class RobloxObbyBatch:
             raise ValueError("lane reset seeds/mask do not match num_envs")
         self._jump_active[checked_mask] = False
         self._jump_cooldown[checked_mask] = 0
+        self._previous_movement[checked_mask] = 0
+        self._has_previous_movement[checked_mask] = False
         results = self.transport.vector_reset_lanes(seeds=seeds, reset_mask=checked_mask.tolist())
         observations = np.stack([self._observation(dict(result)) for result in results])
         infos = [dict(result.get("info", {})) for result in results]
@@ -112,6 +134,7 @@ class RobloxBatchedVecEnv(VecEnv):
         max_episode_steps: int = 400,
     ) -> None:
         self.batch = batch
+        self.render_mode = None
         self.course_seed = int(course_seed)
         self.max_episode_steps = int(max_episode_steps)
         self._actions: np.ndarray | None = None
