@@ -57,3 +57,35 @@ def collect_provenance(config: dict[str, Any], root: Path = ROOT) -> dict[str, A
         },
         "roblox_studio": {"version": None},
     }
+
+
+def collect_m3_provenance(config: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
+    packages: dict[str, str | None] = {}
+    for package in TRACKED_PACKAGES:
+        try:
+            packages[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            packages[package] = None
+    return {
+        "git": {
+            "commit": _git("rev-parse", "HEAD", root=root),
+            "dirty": bool(_git("status", "--porcelain", root=root)),
+        },
+        "config_sha256": config_sha256(config),
+        "experiment": config["experiment"],
+        "master_seed": config["master_seed"],
+        "course_seed": config["course_seed"],
+        "curriculum_stage": config["curriculum_stage"],
+        "generator_version": "0.4.0",
+        "schemas": {
+            "protocol": "0.1.0",
+            "observation": "obby-structured-v1",
+            "action": "obby-action-v1",
+        },
+        "runtime": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "packages": packages,
+        },
+        "roblox_studio": {"version": None},
+    }

@@ -41,9 +41,41 @@ def _studio_worker(transport: StudioHTTPTransport, commands: int) -> None:
             "reward": 0.0,
             "terminated": False,
             "truncated": False,
-            "info": {"course_seed": command.get("course_seed")},
+            "info": {
+                "course_seed": command.get("course_seed"),
+                "curriculum_stage": command.get("curriculum_stage"),
+            },
         }
         handled += 1
+    _post(url, response)
+
+
+def _vector_worker(transport: StudioHTTPTransport, commands: int) -> None:
+    host, port = transport.address
+    url = f"http://{host}:{port}/exchange"
+    response: dict[str, Any] = {"protocol_version": "0.1.0"}
+    for _ in range(commands):
+        command = _post(url, response)
+        while command["message_type"] == "noop":
+            command = _post(url, response)
+        count = len(command.get("course_seeds", command.get("actions", [])))
+        response = {
+            "protocol_version": "0.1.0",
+            "message_type": "vector_step_result",
+            "ack_request_id": command["request_id"],
+            "episode_id": command["episode_id"],
+            "step_id": command.get("step_id", 0),
+            "results": [
+                {
+                    "observation": {"schema": "obby-structured-v1", "values": [0.0] * 22},
+                    "reward": 0.0,
+                    "terminated": False,
+                    "truncated": False,
+                    "info": {"lane_index": index + 1},
+                }
+                for index in range(count)
+            ],
+        }
     _post(url, response)
 
 
@@ -64,3 +96,31 @@ def test_timeout_is_explicit() -> None:
     with pytest.raises(TransportTimeout, match="did not acknowledge"):
         transport.reset(seed=1)
     transport.close()
+
+
+def test_curriculum_stage_is_sent_with_reset() -> None:
+    transport = StudioHTTPTransport(port=0, timeout=2, curriculum_stage=2)
+    worker = threading.Thread(target=_studio_worker, args=(transport, 1), daemon=True)
+    worker.start()
+    reset = transport.reset(seed=5)
+    assert reset["info"]["curriculum_stage"] == 2
+    transport.close()
+    worker.join(timeout=2)
+
+
+def test_invalid_curriculum_stage_is_rejected() -> None:
+    with pytest.raises(ValueError, match="1..4"):
+        StudioHTTPTransport(port=0, curriculum_stage=5)
+
+
+def test_vector_reset_and_step_round_trip() -> None:
+    transport = StudioHTTPTransport(port=0, timeout=2)
+    worker = threading.Thread(target=_vector_worker, args=(transport, 2), daemon=True)
+    worker.start()
+    reset = transport.vector_reset(seeds=list(range(8)))
+    assert [result["info"]["lane_index"] for result in reset] == list(range(1, 9))
+    action = {"strafe": 0.0, "forward": 1.0, "yaw": 0.0, "jump": False}
+    step = transport.vector_step([action] * 8)
+    assert len(step) == 8
+    transport.close()
+    worker.join(timeout=2)

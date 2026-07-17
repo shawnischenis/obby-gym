@@ -15,33 +15,30 @@ function Oracle.plan(manifest: any, config: any): ({ Primitive }?, string?)
 			return nil, string.format("checkpoint is not on stage %d exit", segment.index)
 		end
 		if segment.kind == "gap" or segment.kind == "offset" then
+			if math.abs(segment.parameters.height) > 3 then
+				return nil, string.format("jump at stage %d exceeds oracle height", segment.index)
+			end
 			local airDistance =
 				Vector2.new(segment.parameters.offset, segment.parameters.gap).Magnitude
 			if airDistance > config.maxOracleJumpDistance then
 				return nil, string.format("jump at stage %d exceeds oracle distance", segment.index)
 			end
-			table.insert(
-				primitives,
-				{
-					stage = segment.index,
-					kind = "jump_land",
-					target = segment.exitPosition,
-					jump = true,
-				}
-			)
+			table.insert(primitives, {
+				stage = segment.index,
+				kind = "jump_land",
+				target = segment.exitPosition,
+				jump = true,
+			})
 		elseif segment.kind == "beam" then
 			if segment.parameters.width < config.minOracleBeamWidth then
 				return nil, string.format("beam at stage %d is below oracle width", segment.index)
 			end
-			table.insert(
-				primitives,
-				{
-					stage = segment.index,
-					kind = "beam_traverse",
-					target = segment.exitPosition,
-					jump = false,
-				}
-			)
+			table.insert(primitives, {
+				stage = segment.index,
+				kind = "beam_traverse",
+				target = segment.exitPosition,
+				jump = false,
+			})
 		elseif segment.kind == "stairs" then
 			if segment.parameters.rise > 2 or segment.parameters.run < 2 then
 				return nil,
@@ -59,15 +56,12 @@ function Oracle.plan(manifest: any, config: any): ({ Primitive }?, string?)
 					jump = true,
 				})
 			end
-			table.insert(
-				primitives,
-				{
-					stage = segment.index,
-					kind = "stair_land",
-					target = segment.exitPosition,
-					jump = false,
-				}
-			)
+			table.insert(primitives, {
+				stage = segment.index,
+				kind = "stair_land",
+				target = segment.exitPosition,
+				jump = false,
+			})
 		else
 			return nil, string.format("unknown segment kind at stage %d", segment.index)
 		end

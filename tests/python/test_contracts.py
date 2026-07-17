@@ -36,7 +36,8 @@ def test_reset_request_contract() -> None:
             "request_id": "request-1",
             "episode_id": "episode-1",
             "course_seed": 1000000,
-            "generator_version": "0.1.0",
+            "generator_version": "0.4.0",
+            "curriculum_stage": 4,
         }
     )
 

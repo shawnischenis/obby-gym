@@ -10,6 +10,17 @@ local CourseGenerator = require(ReplicatedStorage.ObbyRL.ProceduralCourseGenerat
 local CourseConfig = require(ReplicatedStorage.ObbyRL.ProceduralCourseConfig)
 local ResetController = require(ReplicatedStorage.ObbyRL.ResetController)
 
+local controlStatus = ReplicatedStorage.ObbyRL:FindFirstChild("ControlStatus")
+if not controlStatus then
+	controlStatus = Instance.new("RemoteEvent")
+	controlStatus.Name = "ControlStatus"
+	controlStatus.Parent = ReplicatedStorage.ObbyRL
+end
+local controlStatusEvent = controlStatus :: RemoteEvent
+controlStatusEvent.OnServerEvent:Connect(function(player: Player, disabled: boolean)
+	player:SetAttribute("ObbyRLDefaultControlsDisabled", disabled == true)
+end)
+
 workspace.Gravity = Config.WORKSPACE_GRAVITY
 local manifest = CourseGenerator.build(0, CourseConfig, workspace)
 local course = workspace:WaitForChild("GeneratedCourseV2")

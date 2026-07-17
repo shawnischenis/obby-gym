@@ -12,6 +12,7 @@ class FakeTransport:
     def __init__(self) -> None:
         self.step_id = 0
         self.closed = False
+        self.actions: list[Mapping[str, float | bool]] = []
 
     def _response(self, reward: float = 0.0) -> Mapping[str, Any]:
         values = [0.0] * OBSERVATION_SIZE
@@ -31,6 +32,7 @@ class FakeTransport:
         return response
 
     def step(self, action: Mapping[str, float | bool]) -> Mapping[str, Any]:
+        self.actions.append(dict(action))
         self.step_id += 1
         return self._response(reward=0.1)
 

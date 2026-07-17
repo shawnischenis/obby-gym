@@ -2,8 +2,14 @@
   "experiment": "m3_fixed_ppo",
   "master_seed": 20260716,
   "course_seed": 0,
+  "curriculum_stage": 1,
   "total_timesteps": 100000,
   "episode_max_steps": 400,
+  "action_mapping": {
+    "yaw_scale": 0.0,
+    "jump_threshold": 0.75,
+    "jump_cooldown_steps": 8
+  },
   "ppo": {
     "policy": "MlpPolicy",
     "learning_rate": 0.0003,
@@ -14,6 +20,7 @@
     "gae_lambda": 0.95,
     "clip_range": 0.2,
     "ent_coef": 0.01,
+    "log_std_init": -0.5,
     "policy_layers": [128, 128]
   },
   "checkpoint_every_steps": 10000,

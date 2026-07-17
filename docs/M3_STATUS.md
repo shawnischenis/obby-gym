@@ -9,6 +9,9 @@ M3 is in progress.
 - Stable-Baselines3 PPO entry point with configurable rollout length, batch size, network architecture, checkpoint interval, and master seed.
 - Per-run resolved configuration, Monitor CSV output, periodic checkpoints, and final model serialization.
 - Unit tests for fixed-seed resets and episode truncation.
+- Edge-triggered jump mapping: activation above `0.75`, release required before retriggering, and an eight-decision cooldown.
+- Reduced initial PPO exploration standard deviation (`log_std_init = -0.5`) to avoid untrained action thrashing.
+- Deterministic evaluator with separate fixed-course and held-out-seed metrics for completion, return, episode length, hazards, and checkpoint progress.
 
 ## Default baseline
 
@@ -30,8 +33,57 @@ The second 128-step smoke invocation completed successfully against course seed 
 
 The smoke budget is intentionally too small to assess policy quality. The negative explained variance (`-8.28`) is not treated as a learning result.
 
+A second 128-step smoke with the corrected action mapping also completed at 7 steps/second. The measured policy standard deviation was `0.606` and entropy loss was `-3.68`, down from approximately `0.999` and `-5.67` in the original twitchy smoke run. The model was saved under `runs/m3-controlled-actions-smoke/`.
+
+The evaluation smoke ran one fixed-seed episode and two held-out seeds for 64 steps each. As expected for an untrained 128-step model, completion and checkpoint progress were zero and mean return was `-0.064`; the purpose of this run was to validate deterministic model loading and metric collection. Results are saved in `runs/m3-controlled-actions-smoke/evaluation-smoke.json`.
+
+## Fixed-course pilot finding
+
+A 2,048-step pilot completed eight PPO rollouts and five full 400-step episodes. Every episode returned exactly `-0.4`, the accumulated time penalty, with no checkpoint progress. This is a valid negative result: the original global-progress reward was too sparse for the calmer exploration policy, so the 100,000-step run was not started.
+
+The bridge now uses potential-based checkpoint-distance shaping and reports each component in `info.reward_components`: checkpoint distance, global progress, checkpoint bonus, finish reward, hazard penalty, and time penalty. A second pilot is required before committing the full budget.
+
+The shaped 2,048-step pilot completed with five episode returns from `-0.3771` to `-0.3509`; deterministic seed-0 evaluation returned `-0.2057` but still reached checkpoint index 0. This confirms meaningful approach progress without successful obstacle traversal.
+
+Freezing yaw produced straight course-relative movement, but a 512-step comparison returned `-5.13`: the avatar reliably reached the first obstacle and incurred repeated hazard penalties instead of wandering near spawn. The remaining learning problem is jump timing, not basic forward locomotion. Episode Monitor logs now include accumulated reward components, hazard count, and maximum checkpoint index so subsequent pilots can measure that directly.
+
+## Curriculum revision
+
+M3 now supports four explicit course stages over the same observation, reward, checkpoint, and transport contracts:
+
+1. One wide, continuous flat traversal for forward/strafe control.
+2. One fixed 3.5-stud gap for approach momentum and jump timing.
+3. One isolated randomized jump with varying gap, lateral offset, and landing height from -3 to +3 studs.
+4. The full eight-stage procedural course.
+
+The trainer and evaluator accept `--curriculum-stage 1..4`. Each resolved run config and provenance record the selected stage. Promotion thresholds will be based on deterministic completion and hazard rates rather than a fixed number of training steps.
+
+The first stage-1 pilot exposed two environment issues rather than a PPO result. A preceding scripted validator left a persistent `Humanoid:Move` command, causing four one-step completions after position reset. Subsequent episodes fell three times each because the original 12-stud-wide runway punished normal lateral exploration. Reset/recovery now explicitly clears Humanoid movement, and stage 1 uses a 40-stud-wide runway. The corrected course passes the Studio curriculum smoke test and requires a clean rerun.
+
+A subsequent clean attempt showed that 40 studs still permitted correlated strafe exploration to leave the runway. Before the play session paused, its second full episode improved to return `-0.148` with zero hazards, but the run correctly ended with `failed` status after a transport timeout. Stage 1 is now 200 studs wide so lateral boundaries do not interfere with the locomotion lesson.
+
+The 200-stud pilot completed normally. Its first episode had one hazard; the second had zero hazards, positive checkpoint-distance reward `+0.216`, and return `-0.181`. The remaining fall was consistent with backward exploration off the spawn platform, so stage 1 now includes a 100-stud safety apron behind spawn without changing the forward target distance. The updated curriculum passes the Studio smoke suite.
+
+The final stage-1 pilot learned successfully in 2,048 steps. After two exploratory failures, its last seven training episodes all finished. Deterministic evaluation completed 3/3 fixed episodes and 2/2 held-out-seed episodes, with zero hazards, checkpoint index 1, and mean lengths of 44.7 and 47.5 steps respectively. Stage 1 is promoted. The trainer supports `--init-model` so stage 2 can inherit this locomotion policy.
+
+## Dynamics synchronization audit
+
+Curriculum progression is paused for an environment audit after visual movement remained jerky. Two concrete risks were found and corrected:
+
+- Roblox's default client `PlayerModule` controls were still active and could issue `Humanoid:Move` calls that competed with the PPO server controller. A `StarterPlayerScripts` client script now disables them and reports its state through bridge telemetry.
+- The action was observed after a fixed three-heartbeat hold, but remained active during the slower HTTP exchange. The bridge now stops Humanoid movement immediately after each observation, so no commanded motion occurs between the recorded next state and the next action.
+- `Humanoid:Move` was initially issued only once at the start of that hold. Continuous forward/strafe input is now refreshed on every physics heartbeat, while yaw and jump remain one-shot controls. Reset and hazard recovery also wait for a grounded, nearly stationary character before returning an observation.
+
+Each transition now reports the requested action, actual hold time, before/after checkpoint distance, before/after position, post-action velocity, reward components, AutoRotate state, and default-control state. `scripts/audit_live_dynamics.py` verifies reset velocity, previous-action alignment, fixed hold duration, controller ownership, and reward directionality before training resumes.
+
+The post-fix 36-transition audit passed. Compared with the single-issue movement command, cumulative forward distance over the scripted block improved from `1.136` to `1.961` studs (about 73%). Forward reward was `+0.3059`, backward reward was `-0.3196`, idle reward was exactly the accumulated time penalty (`-0.012`), and action holds ranged from 50 to 72 ms.
+
+Stage 1 was then retrained from scratch for 2,048 steps under the audited dynamics. After two 400-step exploratory episodes, every subsequent training episode completed, with the final rollout reporting mean episode length 215 and mean return `+1.71`. Deterministic evaluation completed 3/3 fixed-seed and 2/2 held-out-seed episodes with zero hazards; mean episode lengths were 51.3 and 51.5 steps. The promoted checkpoint is `runs/m3-stage1-synced-2048-rerun/final_model.zip`, with full evaluation in the adjacent `evaluation.json`.
+
 ## Remaining M3 work
 
-1. Add periodic fixed-seed and held-out-seed evaluation with completion-rate reporting.
-2. Save complete provenance and explicit run state (`running`, `complete`, or `failed`) with each experiment.
+An eight-lane synchronous vector environment is now implemented; see `docs/M3_VECTOR_ENV.md`. Its initial live physics smoke sustained 56.3 aggregate transitions/second. Independent auto-reset and the Stable-Baselines3 adapter are included, pending a live PPO smoke after the rebuilt plugin is loaded.
+
+1. Save complete provenance and explicit run state (`running`, `complete`, or `failed`) with each experiment.
+2. Add periodic evaluation during long training, using a separately scheduled Studio pass so it does not perturb rollouts.
 3. Run the declared 100,000-step fixed-course budget and evaluate the frozen checkpoint.

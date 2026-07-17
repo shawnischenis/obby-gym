@@ -61,6 +61,7 @@ function AgentHarness.reset(state: State)
 	state.checkpoint = state.checkpoints[1] or state.finish
 	state.recoveryCFrame = state.spawnCFrame
 	state.character:PivotTo(state.spawnCFrame + Vector3.new(0, 3, 0))
+	state.humanoid:Move(Vector3.zero, false)
 	state.root.AssemblyLinearVelocity = Vector3.zero
 	state.root.AssemblyAngularVelocity = Vector3.zero
 	state.humanoid.Health = state.humanoid.MaxHealth
@@ -69,6 +70,7 @@ end
 
 function AgentHarness.recover(state: State)
 	state.character:PivotTo(state.recoveryCFrame + Vector3.new(0, 3, 0))
+	state.humanoid:Move(Vector3.zero, false)
 	state.root.AssemblyLinearVelocity = Vector3.zero
 	state.root.AssemblyAngularVelocity = Vector3.zero
 	state.humanoid.Health = state.humanoid.MaxHealth
@@ -93,7 +95,7 @@ function AgentHarness.advanceCheckpoint(state: State): boolean
 	return true
 end
 
-function AgentHarness.applyAction(state: State, action: Action)
+function AgentHarness.refreshMovement(state: State, action: Action)
 	local strafe = math.clamp(action.strafe, -1, 1)
 	local forward = math.clamp(action.forward, -1, 1)
 	local localMove = Vector3.new(strafe, 0, -forward)
@@ -102,6 +104,11 @@ function AgentHarness.applyAction(state: State, action: Action)
 	end
 	local worldMove = state.root.CFrame:VectorToWorldSpace(localMove)
 	state.humanoid:Move(worldMove, false)
+	return strafe, forward
+end
+
+function AgentHarness.applyAction(state: State, action: Action)
+	local strafe, forward = AgentHarness.refreshMovement(state, action)
 	local yaw = math.clamp(action.yaw, -1, 1)
 	if math.abs(yaw) > 0.001 then
 		state.root.CFrame = state.root.CFrame * CFrame.Angles(0, math.rad(yaw * 8), 0)
@@ -110,6 +117,10 @@ function AgentHarness.applyAction(state: State, action: Action)
 		state.humanoid.Jump = true
 	end
 	state.previousAction = { strafe = strafe, forward = forward, yaw = yaw, jump = action.jump }
+end
+
+function AgentHarness.stop(state: State)
+	state.humanoid:Move(Vector3.zero, false)
 end
 
 function AgentHarness.observe(state: State): { number }

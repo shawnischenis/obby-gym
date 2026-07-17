@@ -35,7 +35,7 @@ export type Manifest = {
 }
 
 local Generator = {}
-local VERSION = "0.3.0"
+local VERSION = "0.4.0"
 local KINDS = { "gap", "offset", "beam", "stairs" }
 
 local function platformSpec(index: number, position: Vector3, config: any): PartSpec
@@ -86,10 +86,11 @@ local function addJump(
 	parts: { PartSpec }
 ): (Vector3, Segment)
 	local gap = random:NextNumber(config.gapMin, config.gapMax)
+	local height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
 	local offset = if kind == "offset"
 		then random:NextNumber(config.offsetMin, config.offsetMax)
 		else 0
-	local exit = current + Vector3.new(offset, 0, -(config.platformLength + gap))
+	local exit = current + Vector3.new(offset, height, -(config.platformLength + gap))
 	table.insert(parts, platformSpec(index, exit, config))
 	return exit,
 		{
@@ -98,7 +99,7 @@ local function addJump(
 			entryPosition = current,
 			exitPosition = exit,
 			checkpointPosition = exit,
-			parameters = { gap = gap, offset = offset },
+			parameters = { gap = gap, offset = offset, height = height },
 		}
 end
 
@@ -177,9 +178,24 @@ local function candidate(requestedSeed: number, generationSeed: number, config: 
 	local start = Vector3.new(0, 4, 0)
 	local current = start
 	local parts: { PartSpec } = { platformSpec(0, start, config) }
+	if config.startSafetyDepth and config.startSafetyDepth > 0 then
+		table.insert(parts, {
+			name = "StartSafetyApron",
+			kind = "platform",
+			position = start
+				+ Vector3.new(0, 0, config.platformLength / 2 + config.startSafetyDepth / 2),
+			size = Vector3.new(
+				config.platformWidth,
+				config.platformHeight,
+				config.startSafetyDepth
+			),
+			stage = 0,
+		})
+	end
 	local segments: { Segment } = {}
+	local kinds = config.segmentKinds or KINDS
 	for index = 1, config.stageCount do
-		local kind = KINDS[random:NextInteger(1, #KINDS)]
+		local kind = kinds[random:NextInteger(1, #kinds)]
 		local segment: Segment
 		if kind == "gap" or kind == "offset" then
 			current, segment = addJump(random, index, kind, current, config, parts)
@@ -299,10 +315,30 @@ local function markerPart(name: string, size: Vector3, position: Vector3, color:
 	return part
 end
 
-function Generator.build(seed: number, config: any, parent: Instance): Manifest
+local function translateManifest(manifest: Manifest, offset: Vector3): Manifest
+	if offset.Magnitude == 0 then
+		return manifest
+	end
+	for _, spec in manifest.parts do
+		spec.position += offset
+	end
+	for _, segment in manifest.segments do
+		segment.entryPosition += offset
+		segment.exitPosition += offset
+		segment.checkpointPosition += offset
+	end
+	manifest.spawnCFrame += offset
+	manifest.finishPosition += offset
+	manifest.courseStart += offset
+	manifest.courseEnd += offset
+	return manifest
+end
+
+function Generator.build(seed: number, config: any, parent: Instance, origin: Vector3?): Manifest
 	local manifest = Generator.manifest(seed, config)
 	local valid, reason = Generator.validate(manifest, config)
 	assert(valid, reason)
+	translateManifest(manifest, origin or Vector3.zero)
 	local old = parent:FindFirstChild("GeneratedCourseV2")
 	if old then
 		old:Destroy()
@@ -350,7 +386,11 @@ function Generator.build(seed: number, config: any, parent: Instance): Manifest
 	local killPlane = markerPart(
 		"KillPlane",
 		Vector3.new(300, 1, 500),
-		Vector3.new(0, config.killPlaneY, manifest.courseEnd.Z / 2),
+		Vector3.new(
+			manifest.courseStart.X,
+			config.killPlaneY,
+			(manifest.courseStart.Z + manifest.courseEnd.Z) / 2
+		),
 		Color3.fromRGB(190, 45, 45)
 	)
 	killPlane.Transparency = 0.35

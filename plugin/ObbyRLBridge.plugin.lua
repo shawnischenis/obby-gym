@@ -12,6 +12,52 @@ toggle.ClickableWhenViewportHidden = true
 local enabled = true
 local generation = 0
 local ACTION_REPEAT_TICKS = 3
+local RESET_SETTLE_TIMEOUT = 1
+local RESET_STABLE_TICKS = 3
+local VECTOR_LANE_SPACING = 400
+
+local function settleCharacter(AgentHarness: any, state: any): number
+	local started = os.clock()
+	local stableTicks = 0
+	repeat
+		AgentHarness.stop(state)
+		RunService.Heartbeat:Wait()
+		local grounded = state.humanoid.FloorMaterial ~= Enum.Material.Air
+		local nearlyStill = state.root.AssemblyLinearVelocity.Magnitude < 2
+		stableTicks = if grounded and nearlyStill then stableTicks + 1 else 0
+	until stableTicks >= RESET_STABLE_TICKS or os.clock() - started >= RESET_SETTLE_TIMEOUT
+	AgentHarness.stop(state)
+	state.root.AssemblyLinearVelocity = Vector3.zero
+	state.root.AssemblyAngularVelocity = Vector3.zero
+	return os.clock() - started
+end
+
+local function settleCharacters(AgentHarness: any, states: { any }): number
+	local started = os.clock()
+	local stableTicks = table.create(#states, 0)
+	local allStable = false
+	repeat
+		allStable = true
+		for index, state in states do
+			AgentHarness.stop(state)
+			local grounded = state.humanoid.FloorMaterial ~= Enum.Material.Air
+			local nearlyStill = state.root.AssemblyLinearVelocity.Magnitude < 2
+			stableTicks[index] = if grounded and nearlyStill then stableTicks[index] + 1 else 0
+			if stableTicks[index] < RESET_STABLE_TICKS then
+				allStable = false
+			end
+		end
+		if not allStable then
+			RunService.Heartbeat:Wait()
+		end
+	until allStable or os.clock() - started >= RESET_SETTLE_TIMEOUT
+	for _, state in states do
+		AgentHarness.stop(state)
+		state.root.AssemblyLinearVelocity = Vector3.zero
+		state.root.AssemblyAngularVelocity = Vector3.zero
+	end
+	return os.clock() - started
+end
 
 local function exchange(payload: any): (boolean, any)
 	local success, result = pcall(function()
@@ -44,10 +90,11 @@ local function waitForRuntime(): (any, any, any, any, Model)
 	end
 	local AgentHarness = require(folder:WaitForChild("AgentHarness"))
 	local CourseGenerator = require(folder:WaitForChild("ProceduralCourseGenerator"))
-	local CourseConfig = require(folder:WaitForChild("ProceduralCourseConfig"))
+	local CurriculumConfig = require(folder:WaitForChild("CurriculumCourseConfig"))
+	local CourseConfig = CurriculumConfig.forStage(4)
 	local manifest = CourseGenerator.manifest(0, CourseConfig)
 	local state = AgentHarness.new(character, manifest)
-	return AgentHarness, CourseGenerator, CourseConfig, state, character
+	return AgentHarness, CourseGenerator, CurriculumConfig, state, character
 end
 
 local function resultPayload(
@@ -60,7 +107,9 @@ local function resultPayload(
 	terminated: boolean,
 	seed: number,
 	commandStarted: number,
-	hazardRecovered: boolean?
+	hazardRecovered: boolean?,
+	rewardComponents: any?,
+	transition: any?
 ): any
 	local course = workspace:FindFirstChild("GeneratedCourseV2")
 	return {
@@ -74,13 +123,96 @@ local function resultPayload(
 		terminated = terminated,
 		truncated = false,
 		info = {
+			default_controls_disabled = if Players:GetPlayers()[1]
+				then Players:GetPlayers()[1]:GetAttribute("ObbyRLDefaultControlsDisabled") == true
+				else false,
+			humanoid_auto_rotate = state.humanoid.AutoRotate,
 			course_seed = seed,
+			curriculum_stage = if course then course:GetAttribute("CurriculumStage") else 4,
 			course_signature = if course then course:GetAttribute("Signature") else nil,
 			course_instances = if course then #course:GetDescendants() else 0,
 			checkpoint_index = state.checkpointIndex,
 			checkpoint_count = #state.checkpoints,
 			hazard_recovered = hazardRecovered == true,
+			reward_components = rewardComponents or {},
+			transition = transition or {},
 			studio_command_seconds = os.clock() - commandStarted,
+		},
+	}
+end
+
+local function cloneAgent(character: Model, parent: Instance, index: number): Model
+	character.Archivable = true
+	local clone = character:Clone()
+	clone.Name = string.format("Agent_%02d", index)
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+			descendant:Destroy()
+		end
+	end
+	clone.Parent = parent
+	local root = clone:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		root.Anchored = false
+	end
+	local humanoid = clone:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.PlatformStand = false
+	end
+	return clone
+end
+
+local function vectorLaneResult(AgentHarness: any, lane: any, action: any, elapsed: number): any
+	local observation = AgentHarness.observe(lane.state)
+	local progress = observation[13]
+	local checkpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
+	local checkpointReward = (lane.lastCheckpointDistance - checkpointDistance) / 20
+	local progressReward = (progress - lane.lastProgress) * 0.1
+	local reachedCheckpoint = AgentHarness.advanceCheckpoint(lane.state)
+	local fell = lane.state.root.Position.Y < -17
+	local terminated = progress >= 0.98
+	local checkpointBonus = if reachedCheckpoint then 0.1 else 0
+	local finishReward = if terminated then 1 else 0
+	local hazardPenalty = if fell then -1 else 0
+	local reward = checkpointReward
+		+ progressReward
+		+ checkpointBonus
+		+ finishReward
+		+ hazardPenalty
+		- 0.001
+	if reachedCheckpoint then
+		checkpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
+	end
+	if fell and not terminated then
+		AgentHarness.recover(lane.state)
+		settleCharacter(AgentHarness, lane.state)
+		observation = AgentHarness.observe(lane.state)
+		progress = observation[13]
+		checkpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
+	end
+	lane.lastProgress = progress
+	lane.lastCheckpointDistance = checkpointDistance
+	AgentHarness.stop(lane.state)
+	return {
+		observation = { schema = "obby-structured-v1", values = observation },
+		reward = reward,
+		terminated = terminated,
+		truncated = false,
+		info = {
+			lane_index = lane.index,
+			course_seed = lane.seed,
+			checkpoint_index = lane.state.checkpointIndex,
+			hazard_recovered = fell,
+			hold_seconds = elapsed,
+			reward_components = {
+				checkpoint = checkpointReward,
+				progress = progressReward,
+				checkpoint_bonus = checkpointBonus,
+				finish = finishReward,
+				hazard = hazardPenalty,
+				time = -0.001,
+			},
+			action = action,
 		},
 	}
 end
@@ -93,11 +225,14 @@ local function runWorker(myGeneration: number)
 			task.wait(0.25)
 			continue
 		end
-		local AgentHarness, CourseGenerator, CourseConfig, state, character =
+		local AgentHarness, CourseGenerator, CurriculumConfig, state, character =
 			runtime[1], runtime[2], runtime[3], runtime[4], runtime[5]
 		local outgoing: any = { protocol_version = "0.1.0", message_type = "worker_ready" }
 		local lastProgress = 0
+		local lastCheckpointDistance = 0
 		local seed = 0
+		local curriculumStage = 4
+		local vectorLanes: { any } = {}
 		print("[ObbyRL Plugin] playtest found; connecting to Python")
 
 		while
@@ -111,13 +246,190 @@ local function runWorker(myGeneration: number)
 				task.wait(0.5)
 				continue
 			end
-			if command.message_type == "reset_command" then
+			if command.message_type == "vector_reset_command" then
 				local commandStarted = os.clock()
+				local vectorRoot = workspace:FindFirstChild("ObbyRLVectorLanes")
+				if vectorRoot then
+					vectorRoot:Destroy()
+				end
+				vectorRoot = Instance.new("Folder")
+				vectorRoot.Name = "ObbyRLVectorLanes"
+				vectorRoot.Parent = workspace
+				vectorLanes = {}
+				curriculumStage = command.curriculum_stage or 4
+				local CourseConfig = CurriculumConfig.forStage(curriculumStage)
+				for index, laneSeed in command.course_seeds do
+					local laneFolder = Instance.new("Folder")
+					laneFolder.Name = string.format("Lane_%02d", index)
+					laneFolder.Parent = vectorRoot
+					local origin = Vector3.new((index - 1) * VECTOR_LANE_SPACING, 0, 0)
+					local manifest =
+						CourseGenerator.build(laneSeed, CourseConfig, laneFolder, origin)
+					local agent = cloneAgent(character, laneFolder, index)
+					local laneState = AgentHarness.new(agent, manifest)
+					AgentHarness.reset(laneState)
+					table.insert(vectorLanes, {
+						index = index,
+						seed = laneSeed,
+						state = laneState,
+						lastProgress = 0,
+						lastCheckpointDistance = (laneState.root.Position - laneState.checkpoint).Magnitude,
+					})
+				end
+				-- The real player is only a rig template in vector mode. Park it outside
+				-- the simulation so it cannot collide with lane 1.
+				local playerRoot = character:FindFirstChild("HumanoidRootPart")
+				if playerRoot and playerRoot:IsA("BasePart") then
+					playerRoot.Anchored = true
+					character:PivotTo(CFrame.new(0, 1000, 0))
+				end
+				local states = {}
+				for _, lane in vectorLanes do
+					table.insert(states, lane.state)
+				end
+				settleCharacters(AgentHarness, states)
+				for _, lane in vectorLanes do
+					lane.lastCheckpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
+				end
+				local results = {}
+				for _, lane in vectorLanes do
+					table.insert(results, {
+						observation = {
+							schema = "obby-structured-v1",
+							values = AgentHarness.observe(lane.state),
+						},
+						reward = 0,
+						terminated = false,
+						truncated = false,
+						info = { lane_index = lane.index, course_seed = lane.seed },
+					})
+				end
+				outgoing = {
+					protocol_version = "0.1.0",
+					message_type = "vector_step_result",
+					ack_request_id = command.request_id,
+					episode_id = command.episode_id,
+					step_id = 0,
+					results = results,
+					info = {
+						num_envs = #vectorLanes,
+						studio_command_seconds = os.clock() - commandStarted,
+					},
+				}
+			elseif command.message_type == "vector_reset_lanes_command" then
+				assert(
+					#command.course_seeds == #vectorLanes,
+					"vector seed count does not match lanes"
+				)
+				assert(
+					#command.reset_mask == #vectorLanes,
+					"vector reset mask does not match lanes"
+				)
+				local CourseConfig = CurriculumConfig.forStage(curriculumStage)
+				local resetStates = {}
+				for index, shouldReset in command.reset_mask do
+					if shouldReset then
+						local oldLane = vectorLanes[index]
+						local parent = oldLane.state.character.Parent
+						assert(parent ~= nil, "vector lane folder is missing")
+						for _, child in parent:GetChildren() do
+							child:Destroy()
+						end
+						local laneSeed = command.course_seeds[index]
+						local origin = Vector3.new((index - 1) * VECTOR_LANE_SPACING, 0, 0)
+						local manifest =
+							CourseGenerator.build(laneSeed, CourseConfig, parent, origin)
+						local agent = cloneAgent(character, parent, index)
+						local laneState = AgentHarness.new(agent, manifest)
+						AgentHarness.reset(laneState)
+						vectorLanes[index] = {
+							index = index,
+							seed = laneSeed,
+							state = laneState,
+							lastProgress = 0,
+							lastCheckpointDistance = 0,
+						}
+						table.insert(resetStates, laneState)
+					end
+				end
+				settleCharacters(AgentHarness, resetStates)
+				local results = {}
+				for _, lane in vectorLanes do
+					lane.lastCheckpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
+					table.insert(results, {
+						observation = {
+							schema = "obby-structured-v1",
+							values = AgentHarness.observe(lane.state),
+						},
+						reward = 0,
+						terminated = false,
+						truncated = false,
+						info = { lane_index = lane.index, course_seed = lane.seed },
+					})
+				end
+				outgoing = {
+					protocol_version = "0.1.0",
+					message_type = "vector_step_result",
+					ack_request_id = command.request_id,
+					episode_id = command.episode_id,
+					step_id = command.step_id,
+					results = results,
+					info = { num_envs = #vectorLanes },
+				}
+			elseif command.message_type == "vector_action_command" then
+				local commandStarted = os.clock()
+				assert(#command.actions == #vectorLanes, "vector action count does not match lanes")
+				for index, lane in vectorLanes do
+					AgentHarness.applyAction(lane.state, command.actions[index])
+				end
+				local elapsed = 0
+				repeat
+					elapsed += RunService.Heartbeat:Wait()
+					if elapsed < ACTION_REPEAT_TICKS / 60 then
+						for index, lane in vectorLanes do
+							AgentHarness.refreshMovement(lane.state, command.actions[index])
+						end
+					end
+				until elapsed >= ACTION_REPEAT_TICKS / 60
+				local results = {}
+				for index, lane in vectorLanes do
+					table.insert(
+						results,
+						vectorLaneResult(AgentHarness, lane, command.actions[index], elapsed)
+					)
+				end
+				outgoing = {
+					protocol_version = "0.1.0",
+					message_type = "vector_step_result",
+					ack_request_id = command.request_id,
+					episode_id = command.episode_id,
+					step_id = command.step_id,
+					results = results,
+					info = {
+						num_envs = #vectorLanes,
+						hold_seconds = elapsed,
+						studio_command_seconds = os.clock() - commandStarted,
+					},
+				}
+			elseif command.message_type == "reset_command" then
+				local commandStarted = os.clock()
+				local playerRoot = character:FindFirstChild("HumanoidRootPart")
+				if playerRoot and playerRoot:IsA("BasePart") then
+					playerRoot.Anchored = false
+				end
 				seed = command.course_seed
+				curriculumStage = command.curriculum_stage or 4
+				local CourseConfig = CurriculumConfig.forStage(curriculumStage)
 				local manifest = CourseGenerator.build(seed, CourseConfig, workspace)
+				local course = workspace:FindFirstChild("GeneratedCourseV2")
+				if course then
+					course:SetAttribute("CurriculumStage", curriculumStage)
+				end
 				state = AgentHarness.new(character, manifest)
 				AgentHarness.reset(state)
+				local settleSeconds = settleCharacter(AgentHarness, state)
 				lastProgress = 0
+				lastCheckpointDistance = (state.root.Position - state.checkpoint).Magnitude
 				outgoing = resultPayload(
 					command.request_id,
 					command.episode_id,
@@ -128,35 +440,67 @@ local function runWorker(myGeneration: number)
 					false,
 					seed,
 					commandStarted,
-					false
+					false,
+					{
+						checkpoint = 0,
+						progress = 0,
+						checkpoint_bonus = 0,
+						finish = 0,
+						hazard = 0,
+						time = 0,
+					},
+					{ reset_settle_seconds = settleSeconds }
 				)
 			elseif command.message_type == "action_command" then
 				local commandStarted = os.clock()
+				local positionBefore = state.root.Position
+				local checkpointBefore = state.checkpoint
+				local distanceBefore = (positionBefore - checkpointBefore).Magnitude
 				AgentHarness.applyAction(state, command.action)
 				local elapsed = 0
 				repeat
 					elapsed += RunService.Heartbeat:Wait()
+					if elapsed < ACTION_REPEAT_TICKS / 60 then
+						-- Humanoid:Move is an input command, so refresh continuous axes each
+						-- physics tick. Jump and yaw remain one-shot in applyAction.
+						AgentHarness.refreshMovement(state, command.action)
+					end
 				until elapsed >= ACTION_REPEAT_TICKS / 60
 				local observation = AgentHarness.observe(state)
+				local positionAfter = state.root.Position
+				local velocityAfter = state.root.AssemblyLinearVelocity
 				local progress = observation[13]
+				local checkpointDistance = (state.root.Position - state.checkpoint).Magnitude
+				local checkpointReward = (lastCheckpointDistance - checkpointDistance) / 20
+				local progressReward = (progress - lastProgress) * 0.1
 				local reachedCheckpoint = AgentHarness.advanceCheckpoint(state)
 				-- Detect before the character body touches the physical plane. Its root stays
 				-- several studs above the contact point, so checking the plane center is too late.
-				local fell = state.root.Position.Y < CourseConfig.killPlaneY + 8
+				local fell = state.root.Position.Y < -17
 				local terminated = progress >= 0.98
-				local reward = (progress - lastProgress) - 0.001
+				local checkpointBonus = if reachedCheckpoint then 0.1 else 0
+				local finishReward = if terminated then 1 else 0
+				local hazardPenalty = if fell then -1 else 0
+				local timePenalty = -0.001
+				local reward = checkpointReward
+					+ progressReward
+					+ checkpointBonus
+					+ finishReward
+					+ hazardPenalty
+					+ timePenalty
 				if reachedCheckpoint then
-					reward += 0.1
+					checkpointDistance = (state.root.Position - state.checkpoint).Magnitude
 				end
-				if terminated then
-					reward += 1
-				elseif fell then
-					reward -= 1
+				if fell and not terminated then
 					AgentHarness.recover(state)
+					settleCharacter(AgentHarness, state)
 					observation = AgentHarness.observe(state)
 					progress = observation[13]
+					checkpointDistance = (state.root.Position - state.checkpoint).Magnitude
 				end
 				lastProgress = progress
+				lastCheckpointDistance = checkpointDistance
+				AgentHarness.stop(state)
 				outgoing = resultPayload(
 					command.request_id,
 					command.episode_id,
@@ -167,7 +511,24 @@ local function runWorker(myGeneration: number)
 					terminated,
 					seed,
 					commandStarted,
-					fell
+					fell,
+					{
+						checkpoint = checkpointReward,
+						progress = progressReward,
+						checkpoint_bonus = checkpointBonus,
+						finish = finishReward,
+						hazard = hazardPenalty,
+						time = timePenalty,
+					},
+					{
+						action = command.action,
+						hold_seconds = elapsed,
+						distance_before = distanceBefore,
+						distance_after = (positionAfter - checkpointBefore).Magnitude,
+						position_before = { positionBefore.X, positionBefore.Y, positionBefore.Z },
+						position_after = { positionAfter.X, positionAfter.Y, positionAfter.Z },
+						velocity_after = { velocityAfter.X, velocityAfter.Y, velocityAfter.Z },
+					}
 				)
 			else
 				outgoing = { protocol_version = "0.1.0", message_type = "worker_ready" }

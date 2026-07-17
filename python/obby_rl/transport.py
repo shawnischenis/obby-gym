@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -91,10 +91,19 @@ class _BrokerServer(ThreadingHTTPServer):
 class StudioHTTPTransport:
     """Synchronous Python side of the Studio-polls-Python protocol."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        timeout: float = 5.0,
+        curriculum_stage: int = 4,
+    ) -> None:
         if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
             raise ValueError("M1 transport must bind to a local interface")
         self.timeout = timeout
+        if curriculum_stage not in {1, 2, 3, 4}:
+            raise ValueError("curriculum_stage must be 1..4")
+        self.curriculum_stage = curriculum_stage
         self.broker = _Broker()
         self.server = _BrokerServer((host, port), self.broker)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -125,12 +134,63 @@ class StudioHTTPTransport:
     def reset(self, *, seed: int) -> Mapping[str, Any]:
         self.episode_id = str(uuid.uuid4())
         self.step_id = 0
-        return self._request("reset_command", course_seed=int(seed), generator_version="0.1.0")
+        return self._request(
+            "reset_command",
+            course_seed=int(seed),
+            generator_version="0.4.0",
+            curriculum_stage=self.curriculum_stage,
+        )
 
     def step(self, action: Mapping[str, float | bool]) -> Mapping[str, Any]:
         response = self._request("action_command", step_id=self.step_id, action=dict(action))
         self.step_id += 1
         return response
+
+    def vector_reset(self, *, seeds: list[int]) -> list[Mapping[str, Any]]:
+        if not seeds:
+            raise ValueError("vector reset requires at least one seed")
+        self.episode_id = str(uuid.uuid4())
+        self.step_id = 0
+        response = self._request(
+            "vector_reset_command",
+            course_seeds=[int(seed) for seed in seeds],
+            generator_version="0.4.0",
+            curriculum_stage=self.curriculum_stage,
+        )
+        results = response.get("results")
+        if not isinstance(results, list) or len(results) != len(seeds):
+            raise ValueError(f"expected {len(seeds)} vector reset results")
+        return results
+
+    def vector_step(self, actions: Sequence[Mapping[str, float | bool]]) -> list[Mapping[str, Any]]:
+        if not actions:
+            raise ValueError("vector step requires at least one action")
+        response = self._request(
+            "vector_action_command",
+            step_id=self.step_id,
+            actions=[dict(action) for action in actions],
+        )
+        self.step_id += 1
+        results = response.get("results")
+        if not isinstance(results, list) or len(results) != len(actions):
+            raise ValueError(f"expected {len(actions)} vector step results")
+        return results
+
+    def vector_reset_lanes(
+        self, *, seeds: Sequence[int], reset_mask: Sequence[bool]
+    ) -> list[Mapping[str, Any]]:
+        if len(seeds) != len(reset_mask) or not seeds:
+            raise ValueError("vector lane seeds and reset mask must have equal non-zero length")
+        response = self._request(
+            "vector_reset_lanes_command",
+            step_id=self.step_id,
+            course_seeds=[int(seed) for seed in seeds],
+            reset_mask=[bool(value) for value in reset_mask],
+        )
+        results = response.get("results")
+        if not isinstance(results, list) or len(results) != len(seeds):
+            raise ValueError(f"expected {len(seeds)} vector lane reset results")
+        return results
 
     def close(self) -> None:
         with self.broker.condition:

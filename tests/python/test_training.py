@@ -12,8 +12,11 @@ def test_fixed_course_forces_seed_on_every_episode() -> None:
     assert first_info["course_seed"] == 17
     assert first_info["fixed_course_seed"] == 17
     for _ in range(3):
-        _, _, _, truncated, _ = env.step(env.action_space.sample())
+        _, _, _, truncated, info = env.step(env.action_space.sample())
     assert truncated
+    assert info["reward_time"] == 0
+    assert info["hazard_count"] == 0
+    assert info["max_checkpoint_index"] == 0
     _, second_info = env.reset()
     assert second_info["course_seed"] == 17
     env.close()
