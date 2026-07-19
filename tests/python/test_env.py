@@ -56,6 +56,18 @@ def test_jump_is_edge_triggered_and_cooled_down() -> None:
     env.close()
 
 
+def test_held_jump_retriggers_after_cooldown() -> None:
+    transport = FakeTransport()
+    env = RobloxObbyEnv(transport, jump_threshold=0.75, jump_cooldown_steps=2)
+    observation, _ = env.reset(seed=1)
+    assert observation[5] == 1
+    high = np.array([0, 1, 0, 0.9], dtype=np.float32)
+    observations = [env.step(high)[0] for _ in range(4)]
+    assert [action["jump"] for action in transport.actions] == [True, False, False, True]
+    assert [observation[5] for observation in observations] == [0, 0, 1, 0]
+    env.close()
+
+
 def test_yaw_scale_can_freeze_heading() -> None:
     transport = FakeTransport()
     env = RobloxObbyEnv(transport, yaw_scale=0)

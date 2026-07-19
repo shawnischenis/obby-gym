@@ -101,8 +101,8 @@ class StudioHTTPTransport:
         if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
             raise ValueError("M1 transport must bind to a local interface")
         self.timeout = timeout
-        if curriculum_stage not in {1, 2, 3, 4}:
-            raise ValueError("curriculum_stage must be 1..4")
+        if curriculum_stage not in set(range(1, 15)):
+            raise ValueError("curriculum_stage must be 1..14")
         self.curriculum_stage = curriculum_stage
         self.broker = _Broker()
         self.server = _BrokerServer((host, port), self.broker)
@@ -137,7 +137,7 @@ class StudioHTTPTransport:
         return self._request(
             "reset_command",
             course_seed=int(seed),
-            generator_version="0.4.0",
+            generator_version="0.5.0",
             curriculum_stage=self.curriculum_stage,
         )
 
@@ -154,7 +154,7 @@ class StudioHTTPTransport:
         response = self._request(
             "vector_reset_command",
             course_seeds=[int(seed) for seed in seeds],
-            generator_version="0.4.0",
+            generator_version="0.5.0",
             curriculum_stage=self.curriculum_stage,
         )
         results = response.get("results")

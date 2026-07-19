@@ -19,9 +19,11 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=ROOT / "configs" / "m3_fixed_ppo.json")
     parser.add_argument("--fixed-episodes", type=int)
     parser.add_argument("--validation-seeds", type=int)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 5))
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 15))
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--jump-threshold", type=float)
+    parser.add_argument("--jump-cooldown-steps", type=int)
     args = parser.parse_args()
 
     config = load_json(args.config)
@@ -38,8 +40,14 @@ def main() -> None:
     )
     base_env = RobloxObbyEnv(
         transport,
-        jump_threshold=float(mapping["jump_threshold"]),
-        jump_cooldown_steps=int(mapping["jump_cooldown_steps"]),
+        jump_threshold=float(
+            args.jump_threshold if args.jump_threshold is not None else mapping["jump_threshold"]
+        ),
+        jump_cooldown_steps=int(
+            args.jump_cooldown_steps
+            if args.jump_cooldown_steps is not None
+            else mapping["jump_cooldown_steps"]
+        ),
         yaw_scale=float(mapping["yaw_scale"]),
     )
     env = gym.wrappers.TimeLimit(base_env, max_episode_steps=max_steps)

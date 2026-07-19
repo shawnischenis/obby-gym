@@ -76,7 +76,7 @@ def collect_m3_provenance(config: dict[str, Any], root: Path = ROOT) -> dict[str
         "master_seed": config["master_seed"],
         "course_seed": config["course_seed"],
         "curriculum_stage": config["curriculum_stage"],
-        "generator_version": "0.4.0",
+        "generator_version": "0.5.0",
         "schemas": {
             "protocol": "0.1.0",
             "observation": "obby-structured-v1",

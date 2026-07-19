@@ -195,7 +195,6 @@ local function vectorLaneResult(
 		lane.actionStartedAt = nil
 		AgentHarness.stop(lane.state)
 		AgentHarness.recover(lane.state)
-		settleCharacter(AgentHarness, lane.state)
 		observation = AgentHarness.observe(lane.state)
 		progress = observation[13]
 		checkpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
@@ -444,21 +443,37 @@ local function runWorker(myGeneration: number)
 					if elapsed < ACTION_REPEAT_TICKS / 60 then
 						for index, lane in vectorLanes do
 							AgentHarness.refreshMovement(lane.state, command.actions[index])
+							AgentHarness.refreshJump(lane.state, command.actions[index])
 						end
 					end
 				until elapsed >= ACTION_REPEAT_TICKS / 60
 				local results = {}
+				local recoveredStates = {}
 				for index, lane in vectorLanes do
-					table.insert(
-						results,
-						vectorLaneResult(
-							AgentHarness,
-							lane,
-							command.actions[index],
-							elapsed,
-							heldActions
-						)
+					local result = vectorLaneResult(
+						AgentHarness,
+						lane,
+						command.actions[index],
+						elapsed,
+						heldActions
 					)
+					table.insert(results, result)
+					if result.info.hazard_recovered then
+						table.insert(recoveredStates, lane.state)
+					end
+				end
+				if #recoveredStates > 0 then
+					settleCharacters(AgentHarness, recoveredStates)
+					for index, lane in vectorLanes do
+						if results[index].info.hazard_recovered then
+							local settledObservation = AgentHarness.observe(lane.state)
+							results[index].observation.values = settledObservation
+							lane.lastProgress = settledObservation[13]
+							lane.lastCheckpointDistance = (
+								lane.state.root.Position - lane.state.checkpoint
+							).Magnitude
+						end
+					end
 				end
 				outgoing = {
 					protocol_version = "0.1.0",
@@ -535,6 +550,7 @@ local function runWorker(myGeneration: number)
 						-- Humanoid:Move is an input command, so refresh continuous axes each
 						-- physics tick. Jump and yaw remain one-shot in applyAction.
 						AgentHarness.refreshMovement(state, command.action)
+						AgentHarness.refreshJump(state, command.action)
 					end
 				until elapsed >= ACTION_REPEAT_TICKS / 60
 				local observation = AgentHarness.observe(state)

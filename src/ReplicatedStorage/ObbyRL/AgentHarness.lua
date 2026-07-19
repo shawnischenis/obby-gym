@@ -12,6 +12,7 @@ export type State = {
 	spawnCFrame: CFrame,
 	checkpoint: Vector3,
 	checkpoints: { Vector3 },
+	checkpointGeometry: { Vector3 },
 	checkpointIndex: number,
 	recoveryCFrame: CFrame,
 	finish: Vector3,
@@ -32,9 +33,22 @@ function AgentHarness.new(character: Model, manifest: any): State
 	-- command and makes sustained strafing trace a circle. Agent yaw is explicit.
 	humanoid.AutoRotate = false
 	local checkpoints: { Vector3 } = {}
+	local checkpointGeometry: { Vector3 } = {}
 	if manifest.segments then
 		for _, segment in manifest.segments do
 			table.insert(checkpoints, segment.checkpointPosition)
+			if segment.kind == "gap" or segment.kind == "offset" then
+				table.insert(
+					checkpointGeometry,
+					Vector3.new(
+						segment.parameters.gap / 10,
+						segment.parameters.height / 3,
+						segment.parameters.angle / 18
+					)
+				)
+			else
+				table.insert(checkpointGeometry, Vector3.new(-1, 0, 0))
+			end
 		end
 	elseif manifest.checkpointPosition then
 		table.insert(checkpoints, manifest.checkpointPosition)
@@ -47,6 +61,7 @@ function AgentHarness.new(character: Model, manifest: any): State
 		spawnCFrame = manifest.spawnCFrame,
 		checkpoint = firstCheckpoint,
 		checkpoints = checkpoints,
+		checkpointGeometry = checkpointGeometry,
 		checkpointIndex = 0,
 		recoveryCFrame = manifest.spawnCFrame,
 		finish = manifest.finishPosition,
@@ -119,6 +134,12 @@ function AgentHarness.applyAction(state: State, action: Action)
 	state.previousAction = { strafe = strafe, forward = forward, yaw = yaw, jump = action.jump }
 end
 
+function AgentHarness.refreshJump(state: State, action: Action)
+	if action.jump then
+		state.humanoid.Jump = true
+	end
+end
+
 function AgentHarness.stop(state: State)
 	state.humanoid:Move(Vector3.zero, false)
 end
@@ -126,6 +147,7 @@ end
 function AgentHarness.observe(state: State): { number }
 	local route = state.courseEnd - state.courseStart
 	local progress = (state.root.Position - state.courseStart):Dot(route.Unit) / route.Magnitude
+	local geometry = state.checkpointGeometry[state.checkpointIndex + 1]
 	return ObservationBuilder.build(
 		state.root,
 		state.humanoid,
@@ -133,7 +155,8 @@ function AgentHarness.observe(state: State): { number }
 		state.finish,
 		progress,
 		state.previousAction,
-		{ state.character }
+		{ state.character },
+		if geometry and geometry.X >= 0 then geometry else nil
 	)
 end
 

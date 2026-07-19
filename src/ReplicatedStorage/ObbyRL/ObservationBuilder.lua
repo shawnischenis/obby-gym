@@ -31,7 +31,8 @@ function ObservationBuilder.build(
 	finish: Vector3,
 	progress: number,
 	previousAction: { strafe: number, forward: number, yaw: number, jump: boolean },
-	ignore: { Instance }
+	ignore: { Instance },
+	jumpGeometry: Vector3?
 ): { number }
 	local localVelocity = root.CFrame:VectorToObjectSpace(root.AssemblyLinearVelocity)
 	local checkpointLocal = scaledVector(root, checkpoint)
@@ -45,6 +46,12 @@ function ObservationBuilder.build(
 	local right = root.CFrame.RightVector
 	local down = Vector3.new(0, -1, 0)
 	local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
+	local routeFeatures = jumpGeometry
+		or Vector3.new(
+			clip(finishLocal.X / 64, -1, 1),
+			clip(finishLocal.Y / 32, -1, 1),
+			clip(finishLocal.Z / 64, -1, 1)
+		)
 
 	local values = {
 		clip(localVelocity.X / 32, -1, 1),
@@ -56,9 +63,9 @@ function ObservationBuilder.build(
 		clip(checkpointLocal.X / 64, -1, 1),
 		clip(checkpointLocal.Y / 32, -1, 1),
 		clip(checkpointLocal.Z / 64, -1, 1),
-		clip(finishLocal.X / 64, -1, 1),
-		clip(finishLocal.Y / 32, -1, 1),
-		clip(finishLocal.Z / 64, -1, 1),
+		routeFeatures.X,
+		routeFeatures.Y,
+		routeFeatures.Z,
 		clip(progress, 0, 1),
 		rayFraction(origin, forward, 24, params),
 		rayFraction(origin, forward + down, 24, params),

@@ -52,11 +52,11 @@ Freezing yaw produced straight course-relative movement, but a 512-step comparis
 M3 now supports four explicit course stages over the same observation, reward, checkpoint, and transport contracts:
 
 1. One wide, continuous flat traversal for forward/strafe control.
-2. One fixed 3.5-stud gap for approach momentum and jump timing.
+2. One fixed 7-stud gap that requires a real jump rather than momentum-assisted walking.
 3. One isolated randomized jump with varying gap, lateral offset, and landing height from -3 to +3 studs.
 4. The full eight-stage procedural course.
 
-The trainer and evaluator accept `--curriculum-stage 1..4`. Each resolved run config and provenance record the selected stage. Promotion thresholds will be based on deterministic completion and hazard rates rather than a fixed number of training steps.
+The trainer and evaluator accept curriculum stages `1..14`. Stage 4 remains the legacy full course for saved-run compatibility; stages 3 and 5-14 are progressive single-jump geometry tiers. Each resolved run config and provenance record the selected stage. Promotion thresholds are based on deterministic completion and hazard rates rather than a fixed number of training steps.
 
 The first stage-1 pilot exposed two environment issues rather than a PPO result. A preceding scripted validator left a persistent `Humanoid:Move` command, causing four one-step completions after position reset. Subsequent episodes fell three times each because the original 12-stud-wide runway punished normal lateral exploration. Reset/recovery now explicitly clears Humanoid movement, and stage 1 uses a 40-stud-wide runway. The corrected course passes the Studio curriculum smoke test and requires a clean rerun.
 
@@ -95,6 +95,63 @@ The pre-change deterministic policy still completed both visible Stage 1 evaluat
 The first from-scratch zero-order-hold training attempt exposed an actuator lease requirement. PPO optimization pauses Python action delivery for seconds; an unlimited hold allowed the last exploratory command to continue through that pause, causing invalid 1-6 step episodes and returns as low as `-24`. That run was stopped and marked failed. Held actions now expire after 250 ms, comfortably above the measured 132 ms normal replacement interval, so ordinary inference remains continuous while PPO updates automatically release movement.
 
 Stage 1 was then retrained from scratch for 8,192 aggregate transitions across eight lanes with the 250 ms lease and no smoothing penalty. Final stochastic mean episode length was 41 with return `+2.22`. Deterministic evaluation completed 3/3 fixed and 2/2 held-out episodes with zero hazards and zero direction reversals; mean lengths were 18.7 and 19.0 decisions, and mean action variation was about `0.038`. The promoted continuous-hold Stage 1 checkpoint is `runs/m3-vector-stage1-continuous-hold-lease250-8192/final_model.zip`.
+
+The initial Stage 2 experiment inherited that checkpoint and trained for 8,192 aggregate transitions across eight fixed 3.5-stud-gap lanes. It completed deterministic evaluation without hazards, but visual inspection showed the avatar could cross through momentum-assisted ground contact without jumping. That checkpoint is retained as a traversal result but is not a valid jump-timing promotion. Stage 2 now uses a fixed 7-stud gap, inside the validated jump envelope but large enough to require an actual jump.
+
+The 7-stud revision passed two scripted controllability gates. Holding forward without jump for 60 decisions produced five hazards and zero completions. Sweeping one jump pulse across approach decisions 0 through 13 showed that decisions 3, 4, and 5 complete in 13 steps while every earlier or later pulse falls. This proves the course both requires jumping and has a reachable timing window.
+
+Several rejected pilots exposed jump-curriculum issues: the original `0.75` edge threshold made jump exploration too rare; held-high signals could not retry after release; repeated recoveries buried the success signal; spawn jumps consumed the cooldown before takeoff; and stochastic movement disturbed the narrow approach. The Stage 2 curriculum now exposes jump readiness in observation slot 5, uses cooldown-gated level triggering, terminates a lane on its first hazard, masks jump execution to the validated 12-18 stud takeoff window during training, adds a `+0.2` grounded takeoff reward, and temporarily scripts forward locomotion while PPO learns the jump dimension.
+
+The resulting isolated-jump run trained for 8,192 transitions and initially passed a five-episode evaluation. Repeated visible trials and a later 20-attempt evaluation showed that this was a small-sample false promotion: the policy frequently jumped too early or late and fell. `runs/m3-vector-stage2-isolated-jump-8192/final_model.zip` is therefore retained only as an experimental artifact, not a promoted checkpoint.
+
+## Stage 2 DAgger and conservative PPO
+
+A lightweight DAgger pipeline now trains only the jump row of the continuous policy head, preserving the promoted Stage 1 movement outputs. It aggregates labels on both oracle-visited and learner-visited observations, progressively reduces oracle execution probability from 1 to 0, and saves each aggregate dataset and iteration checkpoint. The first DAgger attempt failed because its 14-20 stud oracle window had been inferred from single-agent cadence and did not transfer exactly to the eight-lane vector cadence.
+
+The vector timing sweep measured successful takeoffs at 13.60, 15.42, and 17.26 studs. A pulse at 19.14 studs was too early and one at 11.36 studs was too late, so the calibrated oracle window is 13.5-17.5 studs. With that correction, the learner-only fourth DAgger rollout completed 24/32 episodes cleanly. Independent deterministic evaluation of the final cloned model completed 51/64 cleanly (79.7%).
+
+The DAgger model was then fine-tuned with PPO at learning rate `2e-5`, scripted forward movement, termination on the first hazard, and timing rewards using the same calibrated window. Checkpoint evaluation was essential: performance peaked before the end of training and subsequently regressed. The 3,072-step checkpoint completed 24/24 in screening and 62/64 in the confirmation run (96.9%, two hazards). The final 4,096-step model completed only 16/24 in screening and must not be used.
+
+The promoted Stage 2 checkpoint is `runs/m3-stage2-dagger-v2-ppo-conservative/checkpoints/ppo_vector_3072_steps.zip`. Evaluation/deployment uses deterministic actions, jump threshold `0.0`, cooldown `8`, yaw disabled, and scripted forward movement for this isolated jump curriculum. The next promotion gate is to remove scripted forward movement while preserving robust jump completion.
+
+The first attempt to remove scripted forward movement exposed a distribution mismatch. The promoted scripted-movement checkpoint completed only 7/64 with policy movement enabled, and the pre-PPO DAgger model completed 6/64. An 8,192-step low-learning-rate joint PPO run did not improve this: screened checkpoints remained between 8.3% and 12.5% clean. That run is rejected.
+
+Movement-aware DAgger now labels the full oracle action `[strafe=0, forward=1, yaw=0, jump]` on learner-visited observations and fits all four output rows while leaving the shared Stage 1 representation frozen. Its learner-only fourth rollout completed 31/32 episodes cleanly with policy movement enabled. Independent deterministic evaluation without scripted movement completed 56/64 cleanly (87.5%), with eight hazards and mean episode length 11.03 decisions. The promoted joint-control checkpoint is `runs/m3-stage2-dagger-v3-joint-actions/final_model.zip`. The scripted-forward checkpoint remains the higher-success reference at 96.9%, so further joint-policy improvement should target the remaining 9.4 percentage-point gap before Stage 3.
+
+## Progressive geometry randomization
+
+Generator `0.5.0` adds explicit single-jump variation tiers while preserving stage 4 as the legacy full obby for saved-run compatibility:
+
+| Order | Stage | Geometry |
+| --- | ---: | --- |
+| 1 | 3 | Gap 6.5-7.5 studs, level landing |
+| 2 | 5 | Gap 6-8.5 studs, level landing |
+| 3 | 13 | Gap 6-9 studs, level landing |
+| 4 | 14 | Gap 5-8.5 studs, level landing |
+| 5 | 12 | Gap 5-9 studs, level landing |
+| 6 | 6 | Gap 5-10 studs, level landing |
+| 7 | 7 | High-to-low landing, -0.5 to -3 studs |
+| 8 | 8 | Low-to-high landing, +0.5 to +3 studs |
+| 9 | 9 | Approach angle up to 8 degrees |
+| 10 | 10 | Approach angle up to 18 degrees |
+| 11 | 11 | Gap 5-10, height -3 to +3, and angle up to 18 degrees together |
+| Final | 4 | Full eight-segment procedural obby |
+
+Gap, height, and approach angle are sampled deterministically from the course seed. Angles are converted to lateral landing offsets using the actual platform-center distance rather than treated as arbitrary strafe offsets. Evaluation and DAgger assign distinct deterministic course seeds to lanes and reset episodes, preventing a randomized tier from silently training or evaluating only seed 0.
+
+A tier advances only after deterministic evaluation over 64 development seeds and 64 untouched validation seeds reaches at least 90% combined clean completion, neither partition falls below 85%, and visual inspection confirms the policy is jumping rather than exploiting contact or recovery behavior. Failed tiers retain their checkpoint and dataset but do not expand the geometry range.
+
+Stage 3 initially exposed seed overfitting: the Stage 2 joint policy completed 63/64 development courses but only 50/64 held-out courses. Movement-aware DAgger over distinct Stage 3 seeds produced a learner-only 64/64 rollout. Its frozen checkpoint then completed 64/64 development and 56/64 held-out courses, or 93.8% combined with both partitions above the floor. `runs/m3-stage3-narrow-gap-dagger-v1/final_model.zip` is promoted for Stage 3. The same checkpoint generalized directly to Stage 5 at 63/64 development and 64/64 held-out, so no redundant Stage 5 training was performed.
+
+Stage 6's 5-10 stud range exposed an observation/teacher limitation. The Stage 3 checkpoint completed only 46/64 development courses, and a first DAgger attempt reached only 42/64 learner-only because its fixed checkpoint-distance oracle itself completed just 39/64. The takeoff distance must shift with gap length, but the original feed-forward observation duplicated checkpoint-relative and finish-relative vectors on a one-segment course and did not identify the sampled gap.
+
+The structured observation retains its 22-value shape for checkpoint compatibility but now uses route-feature slots 9-11 for normalized gap length, landing height, and approach angle on jump segments. Non-jump segments retain finish-relative values there. The DAgger oracle shifts the calibrated takeoff window with the observed gap (`gap + 6.5` through `gap + 10.5` studs). Stage 6 training must restart under this geometry-aware observation; the failed `m3-stage6-wide-gap-dagger-v1` artifact is not promotable.
+
+Geometry-aware DAgger and weighted cloning did not promote either Stage 6 or Stage 12 because the scripted oracle remained weaker than the inherited policy. Varied-seed PPO on Stage 12 improved the best 64-course development score from 75.0% to 82.8% at 1,024 steps, but missed the 85% partition floor and regressed with further training. Stage 13 (6-9 studs) was inserted so the upper boundary can be learned before lowering the minimum gap; no Stage 12 or Stage 6 artifact is promoted.
+
+Stage 13 varied-seed PPO peaked at 2,048 steps. The frozen checkpoint completed 59/64 development and 62/64 held-out courses, or 94.5% combined, so `runs/m3-stage13-gap6-9-ppo-v1/checkpoints/ppo_vector_2048_steps.zip` is promoted. PPO training now has an explicit `vary_course_seeds` mode that advances a deterministic seed counter independently whenever a vector lane resets; an earlier seed-0-only Stage 12 attempt was stopped and marked failed.
+
+The promoted Stage 13 checkpoint still completed only 48/64 when the lower Stage 12 boundary moved from 6 to 5 studs. A 4,096-step varied-seed fine-tune produced misleading 23/24 checkpoint screens: full 64-course confirmation fell to 37/64 at 2,048 steps and 48/64 at 4,096 steps. This run is rejected and demonstrates that 24-course screens are useful only for ranking candidates, never promotion. The next curriculum change should isolate the lower boundary at 5-8.5 studs before recombining it with the learned 9-stud upper boundary.
 
 1. Save complete provenance and explicit run state (`running`, `complete`, or `failed`) with each experiment.
 2. Add periodic evaluation during long training, using a separately scheduled Studio pass so it does not perturb rollouts.

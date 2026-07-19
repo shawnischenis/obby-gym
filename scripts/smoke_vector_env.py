@@ -13,7 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Smoke-test simultaneous Roblox vector lanes")
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--steps", type=int, default=40)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 5), default=1)
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 15), default=1)
     args = parser.parse_args()
     transport = StudioHTTPTransport(timeout=120, curriculum_stage=args.curriculum_stage)
     batch = RobloxObbyBatch(transport, args.num_envs, yaw_scale=0)

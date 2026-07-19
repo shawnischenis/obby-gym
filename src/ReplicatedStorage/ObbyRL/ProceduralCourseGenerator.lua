@@ -35,7 +35,7 @@ export type Manifest = {
 }
 
 local Generator = {}
-local VERSION = "0.4.0"
+local VERSION = "0.5.0"
 local KINDS = { "gap", "offset", "beam", "stairs" }
 
 local function platformSpec(index: number, position: Vector3, config: any): PartSpec
@@ -87,9 +87,17 @@ local function addJump(
 ): (Vector3, Segment)
 	local gap = random:NextNumber(config.gapMin, config.gapMax)
 	local height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
-	local offset = if kind == "offset"
-		then random:NextNumber(config.offsetMin, config.offsetMax)
-		else 0
+	local offset = 0
+	local angle = 0
+	if kind == "offset" then
+		if config.approachAngleMin and config.approachAngleMax then
+			angle = random:NextNumber(config.approachAngleMin, config.approachAngleMax)
+			offset = math.tan(math.rad(angle)) * (config.platformLength + gap)
+		else
+			offset = random:NextNumber(config.offsetMin, config.offsetMax)
+			angle = math.deg(math.atan(offset / (config.platformLength + gap)))
+		end
+	end
 	local exit = current + Vector3.new(offset, height, -(config.platformLength + gap))
 	table.insert(parts, platformSpec(index, exit, config))
 	return exit,
@@ -99,7 +107,7 @@ local function addJump(
 			entryPosition = current,
 			exitPosition = exit,
 			checkpointPosition = exit,
-			parameters = { gap = gap, offset = offset, height = height },
+			parameters = { gap = gap, offset = offset, height = height, angle = angle },
 		}
 end
 

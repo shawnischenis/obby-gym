@@ -18,7 +18,7 @@ export type ResetRequest = {
 	request_id: string,
 	episode_id: string,
 	course_seed: number,
-	generator_version: "0.1.0",
+	generator_version: "0.5.0",
 }
 
 export type ActionRequest = {

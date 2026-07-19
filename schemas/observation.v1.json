@@ -4,6 +4,11 @@
   "title": "obby-structured-v1 vector layout",
   "schema_version": "obby-structured-v1",
   "size": 22,
+  "route_feature_slots": {
+    "indices": [9, 10, 11],
+    "jump_segment": ["gap_div_10", "height_div_3", "angle_div_18"],
+    "other_segment": ["finish_local_x_div_64", "finish_local_y_div_32", "finish_local_z_div_64"]
+  },
   "fields": [
     {"name":"velocity_local_x","index":0,"range":[-1,1],"scale":32},
     {"name":"velocity_local_y","index":1,"range":[-1,1],"scale":32},
@@ -14,9 +19,9 @@
     {"name":"checkpoint_local_x","index":6,"range":[-1,1],"scale":64},
     {"name":"checkpoint_local_y","index":7,"range":[-1,1],"scale":32},
     {"name":"checkpoint_local_z","index":8,"range":[-1,1],"scale":64},
-    {"name":"finish_local_x","index":9,"range":[-1,1],"scale":64},
-    {"name":"finish_local_y","index":10,"range":[-1,1],"scale":32},
-    {"name":"finish_local_z","index":11,"range":[-1,1],"scale":64},
+    {"name":"route_feature_x","index":9,"range":[-1,1]},
+    {"name":"route_feature_y","index":10,"range":[-1,1]},
+    {"name":"route_feature_z","index":11,"range":[-1,1]},
     {"name":"progress","index":12,"range":[0,1]},
     {"name":"ray_forward","index":13,"range":[0,1],"scale":24},
     {"name":"ray_forward_down","index":14,"range":[0,1],"scale":24},

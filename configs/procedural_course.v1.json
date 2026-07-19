@@ -1,7 +1,7 @@
 {
   "$schema": "../schemas/procedural-course.schema.json",
   "schema_version": "procedural-course-v1",
-  "generator_version": "0.4.0",
+  "generator_version": "0.5.0",
   "stage_count": 8,
   "platform_width": 12,
   "platform_length": 12,

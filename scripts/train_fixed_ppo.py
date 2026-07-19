@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=ROOT / "configs" / "m3_fixed_ppo.json")
     parser.add_argument("--timesteps", type=int, help="Override total training timesteps")
     parser.add_argument("--n-steps", type=int, help="Override PPO rollout length")
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 5))
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 15))
     parser.add_argument("--init-model", type=Path, help="Initialize from a prior checkpoint")
     parser.add_argument("--run-name", type=str)
     return parser.parse_args()

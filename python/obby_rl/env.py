@@ -67,14 +67,16 @@ class RobloxObbyEnv(gym.Env[np.ndarray, np.ndarray]):
         self._jump_cooldown = 0
         course_seed = int(seed if seed is not None else self.np_random.integers(0, 2**31))
         response = self.transport.reset(seed=course_seed)
-        return self._observation(response), {"course_seed": course_seed, **response.get("info", {})}
+        observation = self._observation(response)
+        observation[5] = 1.0
+        return observation, {"course_seed": course_seed, **response.get("info", {})}
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         checked = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
         if checked.shape != (4,):
             raise ValueError(f"expected action shape (4,), got {checked.shape}")
         jump_active = bool(checked[3] > self.jump_threshold)
-        jump = jump_active and not self._jump_active and self._jump_cooldown == 0
+        jump = jump_active and self._jump_cooldown == 0
         self._jump_active = jump_active
         if jump:
             self._jump_cooldown = self.jump_cooldown_steps
@@ -88,8 +90,10 @@ class RobloxObbyEnv(gym.Env[np.ndarray, np.ndarray]):
                 "jump": jump,
             }
         )
+        observation = self._observation(response)
+        observation[5] = float(self._jump_cooldown == 0)
         return (
-            self._observation(response),
+            observation,
             float(response["reward"]),
             bool(response["terminated"]),
             bool(response["truncated"]),
