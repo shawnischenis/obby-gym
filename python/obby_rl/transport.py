@@ -97,13 +97,17 @@ class StudioHTTPTransport:
         port: int = 8765,
         timeout: float = 5.0,
         curriculum_stage: int = 4,
+        action_repeat_ticks: int = 3,
     ) -> None:
         if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
             raise ValueError("M1 transport must bind to a local interface")
         self.timeout = timeout
-        if curriculum_stage not in set(range(1, 15)):
-            raise ValueError("curriculum_stage must be 1..14")
+        if curriculum_stage not in set(range(1, 23)):
+            raise ValueError("curriculum_stage must be 1..22")
         self.curriculum_stage = curriculum_stage
+        if action_repeat_ticks not in range(1, 7):
+            raise ValueError("action_repeat_ticks must be 1..6")
+        self.action_repeat_ticks = int(action_repeat_ticks)
         self.broker = _Broker()
         self.server = _BrokerServer((host, port), self.broker)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -139,6 +143,7 @@ class StudioHTTPTransport:
             course_seed=int(seed),
             generator_version="0.5.0",
             curriculum_stage=self.curriculum_stage,
+            action_repeat_ticks=self.action_repeat_ticks,
         )
 
     def step(self, action: Mapping[str, float | bool]) -> Mapping[str, Any]:
@@ -156,6 +161,7 @@ class StudioHTTPTransport:
             course_seeds=[int(seed) for seed in seeds],
             generator_version="0.5.0",
             curriculum_stage=self.curriculum_stage,
+            action_repeat_ticks=self.action_repeat_ticks,
         )
         results = response.get("results")
         if not isinstance(results, list) or len(results) != len(seeds):

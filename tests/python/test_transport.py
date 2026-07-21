@@ -109,8 +109,13 @@ def test_curriculum_stage_is_sent_with_reset() -> None:
 
 
 def test_invalid_curriculum_stage_is_rejected() -> None:
-    with pytest.raises(ValueError, match="1..14"):
-        StudioHTTPTransport(port=0, curriculum_stage=15)
+    with pytest.raises(ValueError, match="1..22"):
+        StudioHTTPTransport(port=0, curriculum_stage=23)
+
+
+def test_invalid_action_repeat_ticks_is_rejected() -> None:
+    with pytest.raises(ValueError, match="action_repeat_ticks must be 1..6"):
+        StudioHTTPTransport(port=0, action_repeat_ticks=0)
 
 
 def test_vector_reset_and_step_round_trip() -> None:

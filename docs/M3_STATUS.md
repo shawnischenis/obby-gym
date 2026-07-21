@@ -56,7 +56,7 @@ M3 now supports four explicit course stages over the same observation, reward, c
 3. One isolated randomized jump with varying gap, lateral offset, and landing height from -3 to +3 studs.
 4. The full eight-stage procedural course.
 
-The trainer and evaluator accept curriculum stages `1..14`. Stage 4 remains the legacy full course for saved-run compatibility; stages 3 and 5-14 are progressive single-jump geometry tiers. Each resolved run config and provenance record the selected stage. Promotion thresholds are based on deterministic completion and hazard rates rather than a fixed number of training steps.
+The trainer and evaluator accept curriculum stages `1..16`. Stage 4 remains the legacy full course for saved-run compatibility; stages 3 and 5-16 are progressive single-jump geometry tiers. Each resolved run config and provenance record the selected stage. Promotion thresholds are based on deterministic completion and hazard rates rather than a fixed number of training steps.
 
 The first stage-1 pilot exposed two environment issues rather than a PPO result. A preceding scripted validator left a persistent `Humanoid:Move` command, causing four one-step completions after position reset. Subsequent episodes fell three times each because the original 12-stud-wide runway punished normal lateral exploration. Reset/recovery now explicitly clears Humanoid movement, and stage 1 uses a 40-stud-wide runway. The corrected course passes the Studio curriculum smoke test and requires a clean rerun.
 
@@ -128,14 +128,19 @@ Generator `0.5.0` adds explicit single-jump variation tiers while preserving sta
 | 2 | 5 | Gap 6-8.5 studs, level landing |
 | 3 | 13 | Gap 6-9 studs, level landing |
 | 4 | 14 | Gap 5-8.5 studs, level landing |
-| 5 | 12 | Gap 5-9 studs, level landing |
-| 6 | 6 | Gap 5-10 studs, level landing |
-| 7 | 7 | High-to-low landing, -0.5 to -3 studs |
-| 8 | 8 | Low-to-high landing, +0.5 to +3 studs |
-| 9 | 9 | Approach angle up to 8 degrees |
-| 10 | 10 | Approach angle up to 18 degrees |
-| 11 | 11 | Gap 5-10, height -3 to +3, and angle up to 18 degrees together |
+| 5 | 15 | Overlapping replay of 5-8.5 and 6-9 stud ranges |
+| 6 | 12 | Gap 5-9 studs, level landing |
+| 7 | 6 | Gap 5-9 studs, level landing |
+| 8 | 7 | High-to-low landing, -0.5 to -3 studs |
+| 9 | 8 | Low-to-high landing, +0.5 to +3 studs |
+| 10 | 9 | Approach angle up to 8 degrees |
+| 11 | 10 | Approach angle up to 18 degrees |
+| 12 | 11 | Gap 5-9, height -3 to +3, and angle up to 18 degrees together |
 | Final | 4 | Full eight-segment procedural obby |
+
+Stages 16 and 17 retain the 9-10 stud boundary only as optional stress
+benchmarks. They are not promotion gates and are not sampled by the core
+curriculum.
 
 Gap, height, and approach angle are sampled deterministically from the course seed. Angles are converted to lateral landing offsets using the actual platform-center distance rather than treated as arbitrary strafe offsets. Evaluation and DAgger assign distinct deterministic course seeds to lanes and reset episodes, preventing a randomized tier from silently training or evaluating only seed 0.
 
@@ -153,6 +158,149 @@ Stage 13 varied-seed PPO peaked at 2,048 steps. The frozen checkpoint completed 
 
 The promoted Stage 13 checkpoint still completed only 48/64 when the lower Stage 12 boundary moved from 6 to 5 studs. A 4,096-step varied-seed fine-tune produced misleading 23/24 checkpoint screens: full 64-course confirmation fell to 37/64 at 2,048 steps and 48/64 at 4,096 steps. This run is rejected and demonstrates that 24-course screens are useful only for ranking candidates, never promotion. The next curriculum change should isolate the lower boundary at 5-8.5 studs before recombining it with the learned 9-stud upper boundary.
 
+Stage 14 isolated that lower boundary successfully. Its 2,048-step checkpoint completed 62/64 development and 64/64 held-out courses (98.4% combined) and is promoted as `runs/m3-stage14-gap5-8p5-ppo-v1/checkpoints/ppo_vector_2048_steps.zip`. Direct evaluation on uniform Stage 12 remained 48/64, indicating interference between the separately learned upper and lower boundary behaviors. Stage 15 therefore samples from the overlapping 5-8.5 and 6-9 ranges to rehearse both mastered tasks before returning to uniform 5-9 sampling.
+
+Independent lane rebuilding was subsequently identified as a source of invalid transition timing and large evaluation variance. Promotion evaluation now runs synchronous eight-lane cohorts and never rebuilds a course while another lane is active. The PPO vector adapter also supports `reset_all_on_any_done`, which truncates and resets the entire cohort together for transition-correct training. Under the corrected gate, the Stage 15 4,096-step checkpoint completed 55/64 development and 64/64 held-out Stage 12 courses (93.0% combined), then generalized to Stage 6 at 61/64 development and 62/64 held-out (96.1% combined). The same checkpoint completed both high-to-low and low-to-high height stages at 128/128 each.
+
+Small-angle failures were asymmetric: the inherited policy achieved only 52.9% for -8 to -4 degrees. Synchronous DAgger with an oracle strafe proportional to local checkpoint offset corrected this; `runs/m3-stage9-small-angle-dagger-steering-v1/final_model.zip` completed 63/64 development and 64/64 held-out Stage 9 courses (99.2% combined). It generalized directly to Stage 10's ±18-degree range at 60/64 development and 62/64 held-out (95.3% combined).
+
+On Stage 11's fully combined geometry, the steering checkpoint completed 50/64. Steering-aware DAgger improved the frozen model to 53/64, but synchronous PPO confirmation remained 51/64. Performance below 8 studs was 90-100%; the 9-10 stud bin was only 33.3%. Stage 16 isolates 9-10 stud jumps with height and angle randomized together before returning to the full combined distribution. No Stage 11 checkpoint is promoted yet.
+
+The synchronous PPO adapter now supports deterministic weighted curriculum replay at the cohort level. A Stage 16 run sampled 55% current-task cohorts and 45% rehearsal across full-gap, height, and angle stages. Rollout returns remained positive across the 8,192-step run, demonstrating that replay and synchronized resets work operationally, but deterministic Stage 16 checkpoints remained between 37.5% and 45.8%. The run is not promoted.
+
+A direct scripted-expert audit then completed only 19/64 Stage 16 courses. The current DAgger teacher is therefore not an authoritative expert for simultaneous 9-10 stud distance, ±3-stud height, and ±18-degree angle. Stage 16 is paused pending a privileged geometry/physics teacher or empirical feasibility filtering. More PPO or behavior cloning against the current teacher is not justified. Weighted replay remains required for future training, and promotion must include regression evaluation over the earlier gap, height, and angle skill families.
+
 1. Save complete provenance and explicit run state (`running`, `complete`, or `failed`) with each experiment.
 2. Add periodic evaluation during long training, using a separately scheduled Studio pass so it does not perturb rollouts.
 3. Run the declared 100,000-step fixed-course budget and evaluate the frozen checkpoint.
+# Privileged teacher track
+
+The Stage 16 scripted expert is not authoritative enough for further DAgger
+(19/64 in the latest audit). Work has therefore moved to a privileged PPO
+teacher followed by limited-sensing student distillation. The separate 48-value
+teacher contract and Python trainer mode are implemented; see
+`docs/M3_PRIVILEGED_TEACHER.md`. Live transport validation and teacher training
+are the next gates.
+
+## Long-gap scope decision
+
+The 9-10 stud boundary is removed from the core curriculum. It consumed
+substantial training and calibration effort while remaining sensitive to lane,
+reset, and takeoff-frame variation. Core Stages 6 and 11 now cap gaps at 9 studs;
+Stages 16 and 17 remain reproducible optional stress tests only.
+
+Height and angle prerequisites are already complete: the promoted Stage 15
+checkpoint achieved 128/128 on both high-to-low and low-to-high stages, and the
+Stage 9 steering checkpoint achieved 127/128 on small angles and 122/128 on the
+full ±18-degree stage. Work therefore resumes at capped combined geometry
+(Stage 11), followed by the multi-segment procedural Stage 4 course and M4
+domain-randomized training.
+
+The existing Stage 9 steering checkpoint required no additional capped-combined
+training. On two disjoint 64-course Stage 11 partitions it completed 60/64 and
+62/64 cleanly: 122/128 (95.3%) combined, with both partitions above 90%. It is
+therefore promoted for capped combined geometry. Remaining failures concentrate
+in the 8-9 stud and steep negative-angle slices, which remain evaluation bins
+rather than blockers. The next gate is the full eight-segment Stage 4 course.
+
+The first direct Stage 4 baseline completed only 1/32 courses, usually failing
+near the first checkpoint transition. Stage 4 also introduces realistic narrow
+beams and stairs that were not covered by the prior jump curriculum. Bridge
+Stages 18-22 now isolate narrow beams, isolate stairs, and then chain 2, 4, and 8
+mixed segments. Stage 22 matches the final eight-segment structure while Stage 4
+remains the stable final benchmark identifier.
+
+Terminal checkpoint instrumentation on a second Stage 20 screen found nine of
+12 hazards before checkpoint 1 and three after it. The cause was a student
+observation semantic mismatch: route features 9-11 represented gap geometry on
+jumps but fell back to the final-course vector on beams and stairs. Thus an
+isolated beam and the same first beam in a multi-segment course looked different.
+The procedural harness now emits the existing `(-1, 0, 0)` non-jump sentinel
+consistently, independent of remaining course length. This is an observation
+contract correction and requires a new place build and regression evaluation.
+
+Under the corrected contract, the inherited steering policy retained 31/32
+narrow-beam and 32/32 stair completions, but achieved only 31/64 on two-segment
+Stage 20. A conservative 4,096-transition PPO continuation used synchronized
+cohort resets and replay weights `20:0.60,18:0.15,19:0.15,11:0.10`. Checkpoint
+screens on the same 24 seeds scored 10/24 at 1,024 steps, 23/24 at 2,048, and
+24/24 at both 3,072 and 4,096. The final checkpoint is
+`runs/m4-stage20-two-segment-replay-v1/checkpoints/ppo_vector_4096_steps.zip`.
+It is a promotion candidate, not yet promoted: the required 64-course
+development and 64-course untouched validation gates plus Stage 11/18/19
+regressions remain to be run.
+
+The final Stage 20 checkpoint subsequently passed its full promotion gate:
+60/64 development and 62/64 untouched validation courses, or 122/128 (95.3%)
+combined. Regression remained strong on capped combined jumps (62/64), narrow
+beams (32/32), and stairs (31/32). The promoted two-segment checkpoint is
+`runs/m4-stage20-two-segment-replay-v1/checkpoints/ppo_vector_4096_steps.zip`.
+Work advances to Stage 21's four-segment mixed courses.
+
+The promoted Stage 20 policy began Stage 21 at 27/32 (84.4%), with every course
+reaching at least checkpoint 2. An eight-lane 4,096-transition continuation was
+rejected: checkpoint screens fell from 20/24 at 1,024 steps to 12/24 at 2,048
+and 7/24 at 4,096. With `reset_all_on_any_done`, one failure truncates seven
+other four-segment trajectories, leaving rollout mean lengths near 10-12 despite
+successful deterministic episodes taking about 44 decisions. The next diagnostic
+uses four synchronized lanes to reduce cross-lane interruption without returning
+to invalid independent course rebuilding.
+
+Neither reducing the synchronized cohort to four lanes nor adding an all-lanes
+completion barrier produced a promotable model. Four-lane screening peaked at
+19/24. The barrier correctly restored rollout lengths from roughly 10-14 to
+51-58 decisions, but waiting lanes necessarily stored policy actions that the
+environment overrode with zero, making those transitions off-policy; its best
+24-course screen was 21/24 but full confirmation was only 53/64. A transition-
+correct single-lane run also regressed (16/24 at its early screen) and exposed a
+trainer bug: loaded PPO continuations retained the checkpoint's old `n_steps`
+despite the CLI override. Continuation loading now injects learning rate,
+`n_steps`, and batch size during model reconstruction so rollout-buffer settings
+match the resolved run configuration. No Stage 21 training artifact is promoted;
+the promoted Stage 20 model remains the best Stage 21 baseline at 27/32.
+
+A Python-side checkpoint-credit experiment added configurable reward for actual
+checkpoint-index advancement. With `+0.4` extra credit per checkpoint, a
+transition-correct single-lane rollout produced stable shaped returns from
+`+1.84` to `+1.96`, demonstrating that intermediate success is now visible.
+Nevertheless, the first PPO-updated checkpoint fell to 14/24 deterministic
+completion. The run is rejected. Low aggregate KL is not sufficient protection
+because small mean-action changes can cross jump/steering thresholds and alter
+the deterministic controller sharply.
+
+Stage 21's inherited 27/32 completion corresponds to approximately 95% success
+per attempted obstacle; four compounded attempts predict roughly 81-84% whole-
+course completion. A 90% four-obstacle gate requires about 97.4% reliability per
+obstacle. Future Stage 21 optimization should preserve the promoted actor with
+an explicit behavior/KL anchor or warm up the new long-horizon critic before
+allowing actor updates. Ordinary PPO continuation is paused. The checkpoint-
+credit mechanism remains implemented and tested but is not part of evaluation
+reward and has not produced a promoted model.
+
+Critic-only warm-up preserved all actor tensors exactly and increased shaped
+rollout return, but subsequent actor updates remained extremely threshold-
+sensitive: even measured KL around `1e-8` reduced a paired 32-course screen from
+30/32 for the unchanged actor to 21/32. All actor-updated artifacts are rejected.
+The unchanged Stage 20 policy then scored 51/64 on a full Stage 21 partition,
+below promotion. Instrumentation found one reported clean completion at
+checkpoint 3/4 because termination used projected route progress rather than the
+checkpoint chain. Studio termination now requires advancing through every
+checkpoint. Multi-segment evaluations made before this correction may overcount
+rare route-projection shortcuts and must not be used alone for promotion.
+
+After reopening the corrected place, the unchanged Stage 20 policy completed
+25/32 Stage 21 courses. Critic-only PPO warm-up increased shaped return while
+preserving all seven actor tensors bit-exactly. One-epoch actor continuations at
+`1e-6` and target KL `1e-4` avoided immediate collapse on one screen (27/32),
+but extended continuation fell to 21/32; a paired unchanged-policy evaluation on
+the identical seeds scored 30/32. Even actor KL around `1e-8` is therefore too
+large a reliability guarantee for this deterministic threshold controller.
+
+Mixed-course DAgger was corrected so its jump oracle never labels the non-jump
+`(-1, 0, 0)` sentinel. One expert partition achieved 31/32, but a second achieved
+only 25/32, so the scripted expert is not consistently authoritative. Direct
+low-rate cloning scored 24/32. Adding a 10x behavior-anchor loss against the
+promoted policy still scored only 21/32. Both DAgger artifacts are rejected. The
+promoted Stage 20 checkpoint remains the active agent; further Stage 21 training
+requires either a demonstrably stronger expert or a continuous/margin-aware
+action formulation that is less sensitive to tiny output changes.

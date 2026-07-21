@@ -8,6 +8,7 @@ import numpy as np
 from gymnasium import spaces
 
 OBSERVATION_SIZE = 22
+PRIVILEGED_OBSERVATION_SIZE = 48
 DEFAULT_JUMP_THRESHOLD = 0.75
 DEFAULT_JUMP_COOLDOWN_STEPS = 8
 
@@ -102,3 +103,16 @@ class RobloxObbyEnv(gym.Env[np.ndarray, np.ndarray]):
 
     def close(self) -> None:
         self.transport.close()
+
+
+def privileged_observation(response: Mapping[str, Any]) -> np.ndarray:
+    """Extract the teacher-only observation without altering the student contract."""
+    observation = response["privileged_observation"]
+    if observation["schema"] != "obby-privileged-v1":
+        raise ValueError(f"unsupported privileged schema: {observation['schema']}")
+    values = np.asarray(observation["values"], dtype=np.float32)
+    if values.shape != (PRIVILEGED_OBSERVATION_SIZE,):
+        raise ValueError(
+            f"expected {PRIVILEGED_OBSERVATION_SIZE} privileged observations, got {values.shape}"
+        )
+    return np.clip(values, -1.0, 1.0)

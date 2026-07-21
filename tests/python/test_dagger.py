@@ -28,3 +28,11 @@ def test_takeoff_oracle_shifts_window_with_gap_feature() -> None:
     observations[:, 8] = np.asarray([15.4, 15.6, 16.4, 16.6]) / 64
     labels = TakeoffOracle().labels(observations)
     np.testing.assert_array_equal(labels, [1, -1, -1, 1])
+
+
+def test_takeoff_oracle_never_jumps_on_non_jump_sentinel() -> None:
+    observation = np.zeros((1, 22), dtype=np.float32)
+    observation[0, 4] = 1
+    observation[0, 8] = 16 / 64
+    observation[0, 9] = -1
+    np.testing.assert_array_equal(TakeoffOracle().labels(observation), [-1])

@@ -7,13 +7,17 @@ from obby_rl.vector_env import RobloxBatchedVecEnv, RobloxObbyBatch
 
 
 class FakeVectorTransport:
-    def __init__(self, hazard: bool = False) -> None:
+    def __init__(self, hazard: bool = False, terminated_index: int | None = None) -> None:
         self.hazard = hazard
+        self.terminated_index = terminated_index
+        self.actions: list[list[dict[str, float | bool]]] = []
+        self.checkpoint_index = 0
 
     def vector_reset(self, *, seeds: list[int]) -> list[dict[str, Any]]:
         return [self._result(index) for index in range(len(seeds))]
 
     def vector_step(self, actions: list[dict[str, float | bool]]) -> list[dict[str, Any]]:
+        self.actions.append(actions)
         return [self._result(index) for index in range(len(actions))]
 
     def _result(self, index: int) -> dict[str, Any]:
@@ -22,11 +26,16 @@ class FakeVectorTransport:
         values[8] = 0.25
         return {
             "observation": {"schema": "obby-structured-v1", "values": values},
+            "privileged_observation": {
+                "schema": "obby-privileged-v1",
+                "values": values + [0.0] * 26,
+            },
             "reward": 1.0,
-            "terminated": False,
+            "terminated": index == self.terminated_index,
             "truncated": False,
             "info": {
                 "lane_index": index + 1,
+                "checkpoint_index": self.checkpoint_index,
                 "reward_components": {},
                 "hazard_recovered": self.hazard,
             },
@@ -59,6 +68,43 @@ def test_hazard_can_end_vector_trial() -> None:
     assert terminated.tolist() == [True, True]
 
 
+def test_checkpoint_advancement_can_receive_extra_training_credit() -> None:
+    transport = FakeVectorTransport()
+    batch = RobloxObbyBatch(  # type: ignore[arg-type]
+        transport, 1, checkpoint_credit_weight=0.4
+    )
+    batch.reset([0])
+    transport.checkpoint_index = 1
+    _, rewards, _, _, infos = batch.step(np.zeros((1, 4), dtype=np.float32))
+    np.testing.assert_allclose(rewards, [1.4])
+    assert infos[0]["reward_components"]["checkpoint_credit"] == np.float32(0.4)
+    _, rewards, _, _, _ = batch.step(np.zeros((1, 4), dtype=np.float32))
+    np.testing.assert_allclose(rewards, [1.0])
+
+
+def test_privileged_teacher_mode_uses_separate_48_value_contract() -> None:
+    batch = RobloxObbyBatch(  # type: ignore[arg-type]
+        FakeVectorTransport(), 2, privileged_observations=True
+    )
+    observations, _ = batch.reset([0, 1])
+    assert observations.shape == (2, 48)
+    assert batch.student_observations.shape == (2, 22)
+    env = RobloxBatchedVecEnv(batch)
+    assert env.observation_space.shape == (48,)
+    env.close()
+
+
+def test_privileged_teacher_observes_decision_phase_but_student_does_not() -> None:
+    batch = RobloxObbyBatch(  # type: ignore[arg-type]
+        FakeVectorTransport(), 2, privileged_observations=True
+    )
+    observations, _ = batch.reset([0, 1])
+    np.testing.assert_allclose(observations[:, 44], 0)
+    observations, _, _, _, _ = batch.step(np.zeros((2, 4), dtype=np.float32))
+    np.testing.assert_allclose(observations[:, 44], 1 / 32)
+    assert batch.student_observations.shape == (2, 22)
+
+
 def test_jump_timing_bonus_requires_grounded_jump_in_window() -> None:
     batch = RobloxObbyBatch(  # type: ignore[arg-type]
         FakeVectorTransport(), 2, jump_threshold=0, jump_timing_weight=0.2
@@ -69,6 +115,19 @@ def test_jump_timing_bonus_requires_grounded_jump_in_window() -> None:
     np.testing.assert_allclose(rewards, [1.2, 1.0])
     assert infos[0]["reward_components"]["jump_timing"] == np.float32(0.2)
     assert infos[1]["reward_components"]["jump_timing"] == 0
+
+
+def test_held_jump_retriggers_after_cooldown() -> None:
+    transport = FakeVectorTransport()
+    batch = RobloxObbyBatch(  # type: ignore[arg-type]
+        transport, 1, jump_threshold=0, jump_cooldown_steps=1
+    )
+    batch.reset([0])
+    held = np.asarray([[0, 1, 0, 1]], dtype=np.float32)
+    batch.step(held)
+    batch.step(held)
+    batch.step(held)
+    assert [step[0]["jump"] for step in transport.actions] == [True, False, True]
 
 
 def test_early_raw_jump_signal_is_penalized() -> None:
@@ -101,4 +160,61 @@ def test_vector_env_assigns_new_seed_only_to_reset_lanes() -> None:
     env = RobloxBatchedVecEnv(batch, course_seed=100, vary_course_seeds=True)
     assert env._course_seeds() == [100, 101]
     assert env._course_seeds(np.asarray([False, True])) == [100, 102]
+    env.close()
+
+
+def test_vector_env_can_reset_entire_cohort_when_one_lane_finishes() -> None:
+    batch = RobloxObbyBatch(  # type: ignore[arg-type]
+        FakeVectorTransport(terminated_index=0), 2
+    )
+    env = RobloxBatchedVecEnv(batch, reset_all_on_any_done=True)
+    env.reset()
+    _, _, dones, infos = env.step(np.zeros((2, 4), dtype=np.float32))
+    assert dones.tolist() == [True, True]
+    assert infos[1]["cohort_interrupted"] is True
+    assert infos[1]["TimeLimit.truncated"] is True
+    env.close()
+
+
+def test_vector_env_can_wait_at_barrier_until_every_lane_finishes() -> None:
+    batch = RobloxObbyBatch(  # type: ignore[arg-type]
+        FakeVectorTransport(terminated_index=0), 2
+    )
+    env = RobloxBatchedVecEnv(batch, wait_for_all_done=True, max_episode_steps=2)
+    env.reset()
+    _, _, dones, _ = env.step(np.ones((2, 4), dtype=np.float32))
+    assert dones.tolist() == [False, False]
+    _, _, dones, infos = env.step(np.ones((2, 4), dtype=np.float32))
+    assert dones.tolist() == [True, True]
+    assert batch.transport.actions[1][0] == {
+        "strafe": 0.0,
+        "forward": 0.0,
+        "yaw": 0.0,
+        "jump": False,
+    }
+    assert infos[0]["TimeLimit.truncated"] is False
+    assert infos[1]["TimeLimit.truncated"] is True
+    env.close()
+
+
+def test_vector_env_samples_one_curriculum_stage_per_full_reset() -> None:
+    transport = FakeVectorTransport()
+    transport.curriculum_stage = 1
+    batch = RobloxObbyBatch(transport, 2)  # type: ignore[arg-type]
+    env = RobloxBatchedVecEnv(
+        batch,
+        curriculum_replay=[(6, 1.0), (9, 0.000001)],
+        curriculum_sampler_seed=7,
+    )
+    env.reset()
+    assert env.current_curriculum_stage == 6
+    assert transport.curriculum_stage == 6
+    env.close()
+
+
+def test_vector_env_can_replay_scripted_forward_cohorts() -> None:
+    batch = RobloxObbyBatch(FakeVectorTransport(), 2)  # type: ignore[arg-type]
+    env = RobloxBatchedVecEnv(batch, scripted_forward_replay_probability=1.0)
+    env.reset()
+    assert batch.scripted_forward is True
     env.close()

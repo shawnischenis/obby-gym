@@ -7,7 +7,9 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+import torch
 from obby_rl.config import ROOT, load_json
+from obby_rl.feasibility import JumpFeasibilityModel
 from obby_rl.provenance import collect_m3_provenance
 from obby_rl.run_state import finish_run, start_run, write_json
 from obby_rl.transport import StudioHTTPTransport
@@ -23,7 +25,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--timesteps", type=int)
     parser.add_argument("--n-steps", type=int)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 15))
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 23))
+    parser.add_argument("--action-repeat-ticks", type=int, choices=range(1, 7), default=3)
     parser.add_argument("--init-model", type=Path)
     parser.add_argument("--smoothness-weight", type=float, default=0.0)
     parser.add_argument("--terminate-on-hazard", action="store_true")
@@ -34,16 +37,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jump-cooldown-steps", type=int)
     parser.add_argument("--mask-jump-to-takeoff-window", action="store_true")
     parser.add_argument("--scripted-forward", action="store_true")
+    parser.add_argument(
+        "--scripted-forward-replay-probability",
+        type=float,
+        default=0.0,
+        help="probability that a synchronous cohort uses scripted forward movement",
+    )
     parser.add_argument("--jump-mistiming-weight", type=float, default=0.0)
+    parser.add_argument("--checkpoint-credit-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--freeze-actor",
+        action="store_true",
+        help="update only the critic while preserving deterministic actor behavior",
+    )
     parser.add_argument("--learning-rate", type=float)
+    parser.add_argument("--n-epochs", type=int)
+    parser.add_argument("--target-kl", type=float)
     parser.add_argument("--checkpoint-every-steps", type=int)
     parser.add_argument("--run-name")
     parser.add_argument("--vary-course-seeds", action="store_true")
+    parser.add_argument("--reset-all-on-any-done", action="store_true")
+    parser.add_argument("--wait-for-all-done", action="store_true")
+    parser.add_argument(
+        "--privileged-observations",
+        action="store_true",
+        help="train a fresh teacher on the separate exact geometry/physics payload",
+    )
+    parser.add_argument("--jump-feasibility-model", type=Path)
+    parser.add_argument("--jump-feasibility-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--curriculum-replay",
+        help="Comma-separated stage:weight pairs sampled once per synchronous cohort",
+    )
     return parser.parse_args()
+
+
+def parse_curriculum_replay(specification: str | None) -> list[tuple[int, float]]:
+    if not specification:
+        return []
+    replay: list[tuple[int, float]] = []
+    for item in specification.split(","):
+        stage_text, separator, weight_text = item.partition(":")
+        if not separator:
+            raise ValueError("curriculum replay entries must use stage:weight")
+        stage = int(stage_text)
+        weight = float(weight_text)
+        if stage not in range(1, 23) or weight <= 0:
+            raise ValueError("curriculum replay stage or weight is invalid")
+        replay.append((stage, weight))
+    return replay
 
 
 def main() -> None:
     args = parse_args()
+    curriculum_replay = parse_curriculum_replay(args.curriculum_replay)
     config: dict[str, Any] = load_json(args.config)
     num_envs = int(args.num_envs)
     if num_envs < 1:
@@ -60,6 +107,7 @@ def main() -> None:
         **config,
         "num_envs": num_envs,
         "curriculum_stage": int(args.curriculum_stage or config["curriculum_stage"]),
+        "action_repeat_ticks": int(args.action_repeat_ticks),
         "initial_model": str(args.init_model) if args.init_model else None,
         "smoothness_weight": float(args.smoothness_weight),
         "terminate_on_hazard": bool(args.terminate_on_hazard),
@@ -70,9 +118,20 @@ def main() -> None:
         ],
         "mask_jump_to_takeoff_window": bool(args.mask_jump_to_takeoff_window),
         "scripted_forward": bool(args.scripted_forward),
+        "scripted_forward_replay_probability": float(args.scripted_forward_replay_probability),
         "jump_mistiming_weight": float(args.jump_mistiming_weight),
+        "checkpoint_credit_weight": float(args.checkpoint_credit_weight),
+        "freeze_actor": bool(args.freeze_actor),
         "total_timesteps": timesteps,
         "vary_course_seeds": bool(args.vary_course_seeds),
+        "reset_all_on_any_done": bool(args.reset_all_on_any_done),
+        "wait_for_all_done": bool(args.wait_for_all_done),
+        "curriculum_replay": curriculum_replay,
+        "privileged_observations": bool(args.privileged_observations),
+        "jump_feasibility_model": (
+            str(args.jump_feasibility_model) if args.jump_feasibility_model else None
+        ),
+        "jump_feasibility_threshold": float(args.jump_feasibility_threshold),
         "ppo": {**config["ppo"], "n_steps": n_steps, "batch_size": batch_size},
     }
     learning_rate = float(
@@ -81,6 +140,17 @@ def main() -> None:
     if learning_rate <= 0:
         raise ValueError("learning_rate must be positive")
     resolved["ppo"] = {**resolved["ppo"], "learning_rate": learning_rate}
+    n_epochs = int(args.n_epochs if args.n_epochs is not None else config["ppo"]["n_epochs"])
+    if n_epochs < 1:
+        raise ValueError("n_epochs must be positive")
+    target_kl = float(args.target_kl) if args.target_kl is not None else None
+    if target_kl is not None and target_kl <= 0:
+        raise ValueError("target_kl must be positive")
+    resolved["ppo"] = {
+        **resolved["ppo"],
+        "n_epochs": n_epochs,
+        "target_kl": target_kl,
+    }
     jump_threshold = float(
         args.jump_threshold
         if args.jump_threshold is not None
@@ -102,9 +172,18 @@ def main() -> None:
     env: VecMonitor | None = None
     try:
         transport = StudioHTTPTransport(
-            timeout=120, curriculum_stage=int(resolved["curriculum_stage"])
+            timeout=120,
+            curriculum_stage=int(resolved["curriculum_stage"]),
+            action_repeat_ticks=int(args.action_repeat_ticks),
         )
         mapping = config["action_mapping"]
+        feasibility_model: JumpFeasibilityModel | None = None
+        if args.jump_feasibility_model:
+            feasibility_model = JumpFeasibilityModel()
+            feasibility_model.load_state_dict(
+                torch.load(args.jump_feasibility_model, map_location="cpu", weights_only=True)
+            )
+            feasibility_model.eval()
         batch = RobloxObbyBatch(
             transport,
             num_envs,
@@ -121,12 +200,21 @@ def main() -> None:
             mask_jump_to_takeoff_window=bool(args.mask_jump_to_takeoff_window),
             scripted_forward=bool(args.scripted_forward),
             jump_mistiming_weight=float(args.jump_mistiming_weight),
+            checkpoint_credit_weight=float(args.checkpoint_credit_weight),
+            privileged_observations=bool(args.privileged_observations),
+            jump_feasibility_model=feasibility_model,
+            jump_feasibility_threshold=float(args.jump_feasibility_threshold),
         )
         vector_env = RobloxBatchedVecEnv(
             batch,
             course_seed=int(config["course_seed"]),
             max_episode_steps=int(config["episode_max_steps"]),
             vary_course_seeds=bool(args.vary_course_seeds),
+            reset_all_on_any_done=bool(args.reset_all_on_any_done),
+            wait_for_all_done=bool(args.wait_for_all_done),
+            curriculum_replay=curriculum_replay,
+            curriculum_sampler_seed=int(config["master_seed"]),
+            scripted_forward_replay_probability=float(args.scripted_forward_replay_probability),
         )
         env = VecMonitor(vector_env, filename=str(run_dir / "monitor.csv"))
         checkpoint = CheckpointCallback(
@@ -144,9 +232,22 @@ def main() -> None:
         )
         ppo = config["ppo"]
         if args.init_model:
-            model = PPO.load(args.init_model, env=env, device="cpu")
-            model.learning_rate = learning_rate
-            model._setup_lr_schedule()
+            # PPO.load validates the checkpoint against env.observation_space. That
+            # allows teacher curriculum transfer but rejects 22/48-input mixing.
+            # Continuation rollout settings must be injected during reconstruction;
+            # assigning n_steps afterward leaves the old rollout buffer allocated.
+            model = PPO.load(
+                args.init_model,
+                env=env,
+                device="cpu",
+                custom_objects={
+                    "learning_rate": learning_rate,
+                    "n_steps": n_steps,
+                    "batch_size": batch_size,
+                    "n_epochs": n_epochs,
+                    "target_kl": target_kl,
+                },
+            )
             model.verbose = 1
         else:
             model = PPO(
@@ -155,7 +256,7 @@ def main() -> None:
                 learning_rate=learning_rate,
                 n_steps=n_steps,
                 batch_size=batch_size,
-                n_epochs=int(ppo["n_epochs"]),
+                n_epochs=n_epochs,
                 gamma=float(ppo["gamma"]),
                 gae_lambda=float(ppo["gae_lambda"]),
                 clip_range=float(ppo["clip_range"]),
@@ -165,9 +266,16 @@ def main() -> None:
                     "log_std_init": float(ppo["log_std_init"]),
                 },
                 seed=int(config["master_seed"]),
+                target_kl=target_kl,
                 verbose=1,
                 device="cpu",
             )
+        if args.freeze_actor:
+            for parameter in model.policy.mlp_extractor.policy_net.parameters():
+                parameter.requires_grad_(False)
+            for parameter in model.policy.action_net.parameters():
+                parameter.requires_grad_(False)
+            model.policy.log_std.requires_grad_(False)
         model.learn(total_timesteps=timesteps, callback=checkpoint, progress_bar=False)
         model.save(run_dir / "final_model")
         finish_run(state_path, state, "complete")

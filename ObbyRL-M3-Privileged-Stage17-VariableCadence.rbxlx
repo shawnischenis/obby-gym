@@ -36,6 +36,7 @@ export type State = {
 	finish: Vector3,
 	courseStart: Vector3,
 	courseEnd: Vector3,
+	manifest: any,
 	previousAction: Action,
 }
 
@@ -85,6 +86,7 @@ function AgentHarness.new(character: Model, manifest: any): State
 		finish = manifest.finishPosition,
 		courseStart = manifest.courseStart,
 		courseEnd = manifest.courseEnd,
+		manifest = manifest,
 		previousAction = table.clone(ZERO_ACTION),
 	}
 end
@@ -176,6 +178,56 @@ function AgentHarness.observe(state: State): { number }
 		{ state.character },
 		if geometry and geometry.X >= 0 then geometry else nil
 	)
+end
+
+local function appendVector(values: { number }, value: Vector3, scale: Vector3)
+	table.insert(values, value.X / scale.X)
+	table.insert(values, value.Y / scale.Y)
+	table.insert(values, value.Z / scale.Z)
+end
+
+local function platformForStage(manifest: any, stage: number): any?
+	for _, part in manifest.parts or {} do
+		if part.kind == "platform" and part.stage == stage then
+			return part
+		end
+	end
+	return nil
+end
+
+-- This payload is deliberately separate from observe(). Student policies retain
+-- the stable 22-value partial-observation contract, while a teacher can consume
+-- exact simulator geometry and character physics during training.
+function AgentHarness.observePrivileged(state: State): { number }
+	local values = AgentHarness.observe(state)
+	local segmentIndex = state.checkpointIndex + 1
+	local segment = if state.manifest.segments then state.manifest.segments[segmentIndex] else nil
+	local entryPlatform = platformForStage(state.manifest, state.checkpointIndex)
+	local landingPlatform = platformForStage(state.manifest, segmentIndex)
+	local entryPosition = if segment then segment.entryPosition else state.courseStart
+	local landingSize = if landingPlatform then landingPlatform.size else Vector3.zero
+	local parameters = if segment then segment.parameters else {}
+
+	appendVector(values, state.root.Position - state.courseStart, Vector3.new(128, 64, 128))
+	appendVector(values, state.checkpoint - state.root.Position, Vector3.new(64, 32, 64))
+	appendVector(values, entryPosition - state.root.Position, Vector3.new(64, 32, 64))
+	appendVector(values, landingSize, Vector3.new(32, 16, 32))
+	table.insert(values, (parameters.gap or 0) / 12)
+	table.insert(values, (parameters.height or 0) / 6)
+	table.insert(values, (parameters.angle or 0) / 45)
+	table.insert(values, (parameters.offset or 0) / 24)
+	table.insert(values, (state.root.Position - entryPosition).Magnitude / 64)
+	table.insert(values, state.humanoid.WalkSpeed / 32)
+	table.insert(values, state.humanoid.JumpPower / 100)
+	table.insert(values, state.humanoid.JumpHeight / 16)
+	table.insert(values, state.humanoid.HipHeight / 4)
+	table.insert(values, workspace.Gravity / 256)
+	table.insert(values, state.checkpointIndex / 16)
+	table.insert(values, #(state.manifest.segments or {}) / 16)
+	-- Presence flags prevent a zero-sized fallback from looking like real geometry.
+	table.insert(values, if entryPlatform then 1 else 0)
+	table.insert(values, if landingPlatform then 1 else 0)
+	return values
 end
 
 return AgentHarness
@@ -353,7 +405,7 @@ local function mutableBase(): any
 end
 
 function Curriculum.forStage(stage: number): any
-	assert(stage >= 1 and stage <= 16, "curriculum stage must be 1..16")
+	assert(stage >= 1 and stage <= 17, "curriculum stage must be 1..17")
 	local config = mutableBase()
 	if stage == 1 then
 		config.stageCount = 1
@@ -455,7 +507,7 @@ function Curriculum.forStage(stage: number): any
 			config.gapMin = 5
 			config.gapMax = 9
 			config.maxJumpGap = 9
-		else
+		elseif stage == 16 then
 			-- Isolate the hardest combined-geometry long jumps.
 			config.segmentKinds = { "offset" }
 			config.gapMin = 9
@@ -467,6 +519,12 @@ function Curriculum.forStage(stage: number): any
 			config.maxJumpGap = 10
 			config.maxLateralOffset = 8
 			config.maxOracleJumpDistance = 13
+		else
+			-- Master the upper distance boundary without height/angle confounds.
+			config.gapMin = 9
+			config.gapMax = 10
+			config.maxJumpGap = 10
+			config.maxOracleJumpDistance = 10
 		end
 	end
 	config.curriculumStage = stage

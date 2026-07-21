@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Roblox Obby RL: procedurally generated parkour, privileged teachers, DAgger, PPO, and rigorous evaluation.">
+  <title>ObbyRL — Learning Roblox Parkour</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <nav><a class="brand" href="#top">OBBY<span>GYM</span></a><div><a href="#system">System</a><a href="#results">Results</a><a href="#research">Research</a><a href="https://github.com/shawnischenis/obby-gym">GitHub ↗</a></div></nav>
+    <div class="hero-grid" id="top">
+      <div>
+        <p class="eyebrow">ROBLOX × REINFORCEMENT LEARNING</p>
+        <h1>Learning parkour<br>that survives a <em>new course.</em></h1>
+        <p class="lede">A Roblox Studio simulator and Python learning stack for training general obby agents across seeded procedural geometry—not memorizing one obstacle.</p>
+        <div class="actions"><a class="button primary" href="#results">Explore results</a><a class="button" href="M3_STATUS.md">Experiment log</a></div>
+      </div>
+      <aside class="scorecard">
+        <p class="label">PROMOTED TWO-SEGMENT POLICY</p>
+        <strong>95.3%</strong>
+        <span>122 / 128 clean completions</span>
+        <div class="meter"><i style="width:95.3%"></i></div>
+        <dl><div><dt>Combined geometry</dt><dd>122/128</dd></div><div><dt>Narrow beams</dt><dd>32/32</dd></div><div><dt>Stairs</dt><dd>31/32</dd></div></dl>
+      </aside>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p class="section-no">01 / MOTIVATION</p>
+      <h2>An obby is a compact test of general control.</h2>
+      <div class="columns"><p>Walking is easy. Reliable parkour is not: the policy must preserve momentum, time takeoff, steer in the air, land, recognize the next target, and repeat. Small per-obstacle errors compound rapidly across a course.</p><p>We procedurally vary gap, landing height, approach angle, beams, stairs, and obstacle count. Every course has a seed, deterministic manifest, validity oracle, and held-out evaluation split.</p></div>
+    </section>
+
+    <section id="system" class="dark">
+      <p class="section-no">02 / SYSTEM</p><h2>One synchronous learning loop.</h2>
+      <div class="flow" aria-label="Training pipeline">
+        <article><b>01</b><h3>Course generator</h3><p>Seeded, validated geometry and checkpoint chain.</p></article><span class="arrow">→</span>
+        <article><b>02</b><h3>Roblox physics</h3><p>Up to eight isolated lanes advance simultaneously.</p></article><span class="arrow">→</span>
+        <article><b>03</b><h3>Structured sensing</h3><p>22-value student or 48-value privileged observation.</p></article><span class="arrow">→</span>
+        <article><b>04</b><h3>Python learner</h3><p>PPO, cloning, DAgger, replay, and evaluation.</p></article><span class="arrow">→</span>
+        <article><b>05</b><h3>Promotion gate</h3><p>Deterministic development + untouched seeds.</p></article>
+      </div>
+      <div class="contract">
+        <article><span>STUDENT INPUT</span><strong>22</strong><p>Velocity, grounded state, local checkpoint geometry, rays, and previous action.</p></article>
+        <article><span>PRIVILEGED INPUT</span><strong>48</strong><p>Student sensing plus exact geometry, platform size, physics state, and route metadata.</p></article>
+        <article><span>CONTINUOUS ACTION</span><strong>4</strong><p>Strafe, forward, yaw, and jump signal held for a fixed simulation cadence.</p></article>
+      </div>
+    </section>
+
+    <section id="results">
+      <p class="section-no">03 / ABLATIONS</p><h2>What actually mattered?</h2>
+      <p class="note">Only matched, recorded evaluations are presented as results. Missing experiments remain visibly unrun.</p>
+      <div class="ablations">
+        <article class="ablation featured"><header><span>A</span><div><h3>Privileged teacher vs limited student</h3><p>Same two held-out Stage 2 partitions</p></div></header><div class="compare"><div><small>48-input teacher</small><strong>88.3%</strong><i style="--w:88.3%"></i><em>113 / 128</em></div><div><small>22-input DAgger student</small><strong>100%</strong><i style="--w:100%"></i><em>128 / 128</em></div></div><p class="finding">Privileged sensing helped produce labels, but did not guarantee the strongest deployed policy. Aggregating student-visited states let the limited student exceed its teacher on matched seeds.</p></article>
+        <article class="ablation"><header><span>B</span><div><h3>Imitation vs imitation + RL</h3><p>Stage 2 limited-sensing student</p></div></header><div class="compare three"><div><small>Behavior cloning</small><strong>84.4%</strong><em>54 / 64</em></div><div><small>+ DAgger</small><strong>100%</strong><em>128 / 128</em></div><div><small>+ conservative PPO</small><strong>100%</strong><em>128 / 128</em></div></div><p class="finding">Plain cloning drifted off the teacher distribution. DAgger fixed robustness; PPO preserved success while reducing mean completion from ≈14 decisions to 12.25–12.48.</p></article>
+        <article class="ablation pending"><header><span>C</span><div><h3>Feedforward vs memory</h3><p>Pre-registered, not yet trained</p></div></header><div class="pending-box"><strong>NOT RUN</strong><p>Compare the promoted feedforward policy against a parameter-matched recurrent PPO policy on identical seeds, budgets, observations, and rewards. Reset recurrent state at episode boundaries and report a memory-sensitive subset separately.</p></div><p class="finding">The current courses expose local target geometry, so recurrence may not help. The ablation should include delayed or occluded cues before claiming a memory advantage.</p></article>
+      </div>
+    </section>
+
+    <section class="lessons">
+      <p class="section-no">04 / ENGINEERING LESSONS</p><h2>The simulator contract was part of the algorithm.</h2>
+      <div class="lesson-grid">
+        <article><b>Fixed-duration actions</b><p>Refreshing held movement every physics tick replaced twitchy “key tapping” with continuous control.</p></article>
+        <article><b>Synchronous cohorts</b><p>Rebuilding one course while other lanes moved corrupted transition timing. Cohort resets restored valid rollouts.</p></article>
+        <article><b>Curriculum replay</b><p>Earlier skills remained in the sampling mixture so new geometry did not silently erase locomotion or jump timing.</p></article>
+        <article><b>Honest boundaries</b><p>Unreliable 9–10 stud jumps were moved to an optional stress test instead of stalling the core distribution.</p></article>
+        <article><b>Distribution-aware imitation</b><p>Cloning perfect trajectories was insufficient; learner-visited DAgger states were decisive.</p></article>
+        <article><b>Promotion, not anecdotes</b><p>Checkpoints require deterministic development and untouched validation partitions, plus regression suites.</p></article>
+      </div>
+    </section>
+
+    <section id="research" class="research">
+      <p class="section-no">05 / RESEARCH CONTEXT</p><h2>Techniques and primary references.</h2>
+      <div class="papers">
+        <a href="https://arxiv.org/abs/1707.06347"><span>POLICY OPTIMIZATION</span><h3>Proximal Policy Optimization Algorithms</h3><p>Schulman et al., 2017</p></a>
+        <a href="https://arxiv.org/abs/1011.0686"><span>IMITATION LEARNING</span><h3>DAgger: No-Regret Online Imitation</h3><p>Ross, Gordon & Bagnell, 2010</p></a>
+        <a href="https://arxiv.org/abs/1703.06907"><span>RANDOMIZATION</span><h3>Domain Randomization for Sim-to-Real</h3><p>Tobin et al., 2017</p></a>
+        <a href="https://arxiv.org/abs/1912.12294"><span>PRIVILEGED LEARNING</span><h3>Learning by Cheating</h3><p>Chen et al., 2019</p></a>
+        <a href="https://arxiv.org/abs/1511.06295"><span>DISTILLATION</span><h3>Policy Distillation</h3><p>Rusu et al., 2015</p></a>
+        <a href="https://arxiv.org/abs/1507.06527"><span>MEMORY</span><h3>Deep Recurrent Q-Learning for POMDPs</h3><p>Hausknecht & Stone, 2015</p></a>
+      </div>
+    </section>
+  </main>
+  <footer><strong>Obby Gym</strong><p>Procedural Roblox parkour as a reproducible control benchmark.</p><a href="https://github.com/shawnischenis/obby-gym">Source on GitHub ↗</a></footer>
+</body>
+</html>

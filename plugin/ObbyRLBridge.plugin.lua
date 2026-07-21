@@ -11,7 +11,7 @@ toggle.ClickableWhenViewportHidden = true
 
 local enabled = true
 local generation = 0
-local ACTION_REPEAT_TICKS = 3
+local DEFAULT_ACTION_REPEAT_TICKS = 3
 local RESET_SETTLE_TIMEOUT = 1
 local RESET_STABLE_TICKS = 3
 local VECTOR_LANE_SPACING = 400
@@ -120,6 +120,10 @@ local function resultPayload(
 		episode_id = episodeId,
 		step_id = stepId,
 		observation = { schema = "obby-structured-v1", values = AgentHarness.observe(state) },
+		privileged_observation = {
+			schema = "obby-privileged-v1",
+			values = AgentHarness.observePrivileged(state),
+		},
 		reward = reward,
 		terminated = terminated,
 		truncated = false,
@@ -177,7 +181,8 @@ local function vectorLaneResult(
 	local progressReward = (progress - lane.lastProgress) * 0.1
 	local reachedCheckpoint = AgentHarness.advanceCheckpoint(lane.state)
 	local fell = lane.state.root.Position.Y < -17
-	local terminated = progress >= 0.98
+	local terminated = reachedCheckpoint
+		and lane.state.checkpointIndex >= #lane.state.checkpoints
 	local checkpointBonus = if reachedCheckpoint then 0.1 else 0
 	local finishReward = if terminated then 1 else 0
 	local hazardPenalty = if fell then -1 else 0
@@ -208,6 +213,10 @@ local function vectorLaneResult(
 	end
 	return {
 		observation = { schema = "obby-structured-v1", values = observation },
+		privileged_observation = {
+			schema = "obby-privileged-v1",
+			values = AgentHarness.observePrivileged(lane.state),
+		},
 		reward = reward,
 		terminated = terminated,
 		truncated = false,
@@ -247,6 +256,7 @@ local function runWorker(myGeneration: number)
 		local lastCheckpointDistance = 0
 		local seed = 0
 		local curriculumStage = 4
+		local actionRepeatTicks = DEFAULT_ACTION_REPEAT_TICKS
 		local vectorLanes: { any } = {}
 		local heldActions: { [any]: any } = {}
 		local lastActionStartedAt: number? = nil
@@ -296,6 +306,7 @@ local function runWorker(myGeneration: number)
 				vectorRoot.Parent = workspace
 				vectorLanes = {}
 				curriculumStage = command.curriculum_stage or 4
+				actionRepeatTicks = math.clamp(command.action_repeat_ticks or 3, 1, 6)
 				local CourseConfig = CurriculumConfig.forStage(curriculumStage)
 				for index, laneSeed in command.course_seeds do
 					local laneFolder = Instance.new("Folder")
@@ -338,6 +349,10 @@ local function runWorker(myGeneration: number)
 						observation = {
 							schema = "obby-structured-v1",
 							values = AgentHarness.observe(lane.state),
+						},
+						privileged_observation = {
+							schema = "obby-privileged-v1",
+							values = AgentHarness.observePrivileged(lane.state),
 						},
 						reward = 0,
 						terminated = false,
@@ -408,6 +423,10 @@ local function runWorker(myGeneration: number)
 							schema = "obby-structured-v1",
 							values = AgentHarness.observe(lane.state),
 						},
+						privileged_observation = {
+							schema = "obby-privileged-v1",
+							values = AgentHarness.observePrivileged(lane.state),
+						},
 						reward = 0,
 						terminated = false,
 						truncated = false,
@@ -440,13 +459,13 @@ local function runWorker(myGeneration: number)
 				local elapsed = 0
 				repeat
 					elapsed += RunService.Heartbeat:Wait()
-					if elapsed < ACTION_REPEAT_TICKS / 60 then
+					if elapsed < actionRepeatTicks / 60 then
 						for index, lane in vectorLanes do
 							AgentHarness.refreshMovement(lane.state, command.actions[index])
 							AgentHarness.refreshJump(lane.state, command.actions[index])
 						end
 					end
-				until elapsed >= ACTION_REPEAT_TICKS / 60
+				until elapsed >= actionRepeatTicks / 60
 				local results = {}
 				local recoveredStates = {}
 				for index, lane in vectorLanes do
@@ -468,6 +487,8 @@ local function runWorker(myGeneration: number)
 						if results[index].info.hazard_recovered then
 							local settledObservation = AgentHarness.observe(lane.state)
 							results[index].observation.values = settledObservation
+							results[index].privileged_observation.values =
+								AgentHarness.observePrivileged(lane.state)
 							lane.lastProgress = settledObservation[13]
 							lane.lastCheckpointDistance = (
 								lane.state.root.Position - lane.state.checkpoint
@@ -485,6 +506,7 @@ local function runWorker(myGeneration: number)
 					info = {
 						num_envs = #vectorLanes,
 						hold_seconds = elapsed,
+						action_repeat_ticks = actionRepeatTicks,
 						studio_command_seconds = os.clock() - commandStarted,
 					},
 				}
@@ -497,6 +519,7 @@ local function runWorker(myGeneration: number)
 				end
 				seed = command.course_seed
 				curriculumStage = command.curriculum_stage or 4
+				actionRepeatTicks = math.clamp(command.action_repeat_ticks or 3, 1, 6)
 				local CourseConfig = CurriculumConfig.forStage(curriculumStage)
 				local manifest = CourseGenerator.build(seed, CourseConfig, workspace)
 				local course = workspace:FindFirstChild("GeneratedCourseV2")
@@ -546,13 +569,13 @@ local function runWorker(myGeneration: number)
 				local elapsed = 0
 				repeat
 					elapsed += RunService.Heartbeat:Wait()
-					if elapsed < ACTION_REPEAT_TICKS / 60 then
+					if elapsed < actionRepeatTicks / 60 then
 						-- Humanoid:Move is an input command, so refresh continuous axes each
 						-- physics tick. Jump and yaw remain one-shot in applyAction.
 						AgentHarness.refreshMovement(state, command.action)
 						AgentHarness.refreshJump(state, command.action)
 					end
-				until elapsed >= ACTION_REPEAT_TICKS / 60
+				until elapsed >= actionRepeatTicks / 60
 				local observation = AgentHarness.observe(state)
 				local positionAfter = state.root.Position
 				local velocityAfter = state.root.AssemblyLinearVelocity
@@ -564,7 +587,8 @@ local function runWorker(myGeneration: number)
 				-- Detect before the character body touches the physical plane. Its root stays
 				-- several studs above the contact point, so checking the plane center is too late.
 				local fell = state.root.Position.Y < -17
-				local terminated = progress >= 0.98
+				local terminated = reachedCheckpoint
+					and state.checkpointIndex >= #state.checkpoints
 				local checkpointBonus = if reachedCheckpoint then 0.1 else 0
 				local finishReward = if terminated then 1 else 0
 				local hazardPenalty = if fell then -1 else 0

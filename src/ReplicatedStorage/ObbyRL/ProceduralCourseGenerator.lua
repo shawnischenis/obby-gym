@@ -85,7 +85,14 @@ local function addJump(
 	config: any,
 	parts: { PartSpec }
 ): (Vector3, Segment)
-	local gap = random:NextNumber(config.gapMin, config.gapMax)
+	local gapMin = config.gapMin
+	local gapMax = config.gapMax
+	if config.gapRanges then
+		local selectedRange = config.gapRanges[random:NextInteger(1, #config.gapRanges)]
+		gapMin = selectedRange[1]
+		gapMax = selectedRange[2]
+	end
+	local gap = random:NextNumber(gapMin, gapMax)
 	local height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
 	local offset = 0
 	local angle = 0

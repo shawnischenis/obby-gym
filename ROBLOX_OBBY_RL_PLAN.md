@@ -206,6 +206,8 @@ Exit criteria:
 Deliverables:
 
 - Curriculum from easy parameter ranges/short courses to the full training distribution.
+- Use bridge stages for narrow beams, stairs, then 2-, 4-, and 8-segment mixed
+  courses; 9-10 stud jumps are excluded from the core distribution.
 - Per-episode seeded course randomization.
 - Same observation, action, reward, model capacity, and training-step budget as the fixed baseline wherever possible.
 - Optional parallel Studio workers only after one worker is reliable.

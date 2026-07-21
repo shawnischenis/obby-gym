@@ -19,7 +19,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=ROOT / "configs" / "m3_fixed_ppo.json")
     parser.add_argument("--fixed-episodes", type=int)
     parser.add_argument("--validation-seeds", type=int)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 15))
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 23))
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--jump-threshold", type=float)

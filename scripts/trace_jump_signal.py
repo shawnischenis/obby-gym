@@ -15,7 +15,7 @@ def main() -> None:
         "--model",
         default="runs/m3-vector-stage1-continuous-hold-lease250-8192/final_model.zip",
     )
-    parser.add_argument("--curriculum-stage", type=int, choices=range(2, 15), default=2)
+    parser.add_argument("--curriculum-stage", type=int, choices=range(2, 18), default=2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--steps", type=int, default=20)
     args = parser.parse_args()

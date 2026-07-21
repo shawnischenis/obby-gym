@@ -18,6 +18,7 @@ export type State = {
 	finish: Vector3,
 	courseStart: Vector3,
 	courseEnd: Vector3,
+	manifest: any,
 	previousAction: Action,
 }
 
@@ -67,6 +68,7 @@ function AgentHarness.new(character: Model, manifest: any): State
 		finish = manifest.finishPosition,
 		courseStart = manifest.courseStart,
 		courseEnd = manifest.courseEnd,
+		manifest = manifest,
 		previousAction = table.clone(ZERO_ACTION),
 	}
 end
@@ -156,8 +158,61 @@ function AgentHarness.observe(state: State): { number }
 		progress,
 		state.previousAction,
 		{ state.character },
-		if geometry and geometry.X >= 0 then geometry else nil
+		-- checkpointGeometry always carries the route-feature contract. Non-jump
+		-- segments use the stable (-1, 0, 0) sentinel instead of falling back to
+		-- a course-end vector whose meaning changes with remaining course length.
+		geometry
 	)
+end
+
+local function appendVector(values: { number }, value: Vector3, scale: Vector3)
+	table.insert(values, value.X / scale.X)
+	table.insert(values, value.Y / scale.Y)
+	table.insert(values, value.Z / scale.Z)
+end
+
+local function platformForStage(manifest: any, stage: number): any?
+	for _, part in manifest.parts or {} do
+		if part.kind == "platform" and part.stage == stage then
+			return part
+		end
+	end
+	return nil
+end
+
+-- This payload is deliberately separate from observe(). Student policies retain
+-- the stable 22-value partial-observation contract, while a teacher can consume
+-- exact simulator geometry and character physics during training.
+function AgentHarness.observePrivileged(state: State): { number }
+	local values = AgentHarness.observe(state)
+	local segmentIndex = state.checkpointIndex + 1
+	local segment = if state.manifest.segments then state.manifest.segments[segmentIndex] else nil
+	local entryPlatform = platformForStage(state.manifest, state.checkpointIndex)
+	local landingPlatform = platformForStage(state.manifest, segmentIndex)
+	local entryPosition = if segment then segment.entryPosition else state.courseStart
+	local landingSize = if landingPlatform then landingPlatform.size else Vector3.zero
+	local parameters = if segment then segment.parameters else {}
+
+	appendVector(values, state.root.Position - state.courseStart, Vector3.new(128, 64, 128))
+	appendVector(values, state.checkpoint - state.root.Position, Vector3.new(64, 32, 64))
+	appendVector(values, entryPosition - state.root.Position, Vector3.new(64, 32, 64))
+	appendVector(values, landingSize, Vector3.new(32, 16, 32))
+	table.insert(values, (parameters.gap or 0) / 12)
+	table.insert(values, (parameters.height or 0) / 6)
+	table.insert(values, (parameters.angle or 0) / 45)
+	table.insert(values, (parameters.offset or 0) / 24)
+	table.insert(values, (state.root.Position - entryPosition).Magnitude / 64)
+	table.insert(values, state.humanoid.WalkSpeed / 32)
+	table.insert(values, state.humanoid.JumpPower / 100)
+	table.insert(values, state.humanoid.JumpHeight / 16)
+	table.insert(values, state.humanoid.HipHeight / 4)
+	table.insert(values, workspace.Gravity / 256)
+	table.insert(values, state.checkpointIndex / 16)
+	table.insert(values, #(state.manifest.segments or {}) / 16)
+	-- Presence flags prevent a zero-sized fallback from looking like real geometry.
+	table.insert(values, if entryPlatform then 1 else 0)
+	table.insert(values, if landingPlatform then 1 else 0)
+	return values
 end
 
 return AgentHarness

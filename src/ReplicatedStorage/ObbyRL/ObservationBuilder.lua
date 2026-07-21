@@ -46,6 +46,8 @@ function ObservationBuilder.build(
 	local right = root.CFrame.RightVector
 	local down = Vector3.new(0, -1, 0)
 	local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
+	-- AgentHarness supplies a stable per-segment geometry vector. The fallback is
+	-- retained only for legacy callers outside the procedural harness.
 	local routeFeatures = jumpGeometry
 		or Vector3.new(
 			clip(finishLocal.X / 64, -1, 1),

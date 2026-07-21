@@ -12,7 +12,7 @@ from obby_rl.transport import StudioHTTPTransport
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit Studio action/observation synchronization")
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 15), default=1)
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 23), default=1)
     parser.add_argument("--output", type=Path, default=ROOT / "runs" / "dynamics-audit.jsonl")
     args = parser.parse_args()
     transport = StudioHTTPTransport(timeout=120, curriculum_stage=args.curriculum_stage)
