@@ -115,7 +115,9 @@ class RobloxObbyBatch:
                 self._decision_steps / PRIVILEGED_DECISION_PHASE_SCALE, 0.0, 1.0
             )
 
-    def reset(self, seeds: list[int]) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    def reset(
+        self, seeds: list[int], post_landing_mask: np.ndarray | None = None
+    ) -> tuple[np.ndarray, list[dict[str, Any]]]:
         if len(seeds) != self.num_envs:
             raise ValueError(f"expected {self.num_envs} seeds, got {len(seeds)}")
         self._jump_active.fill(False)
@@ -123,8 +125,20 @@ class RobloxObbyBatch:
         self._previous_movement.fill(0)
         self._has_previous_movement.fill(False)
         self._decision_steps.fill(0)
-        self._checkpoint_indices.fill(0)
-        results = self.transport.vector_reset(seeds=seeds)
+        landing_mask = (
+            np.zeros(self.num_envs, dtype=np.bool_)
+            if post_landing_mask is None
+            else np.asarray(post_landing_mask, dtype=np.bool_)
+        )
+        if landing_mask.shape != (self.num_envs,):
+            raise ValueError("post-landing mask must match num_envs")
+        self._checkpoint_indices[:] = landing_mask.astype(np.int32)
+        if np.any(landing_mask):
+            results = self.transport.vector_reset(
+                seeds=seeds, post_landing_mask=landing_mask.tolist()
+            )
+        else:
+            results = self.transport.vector_reset(seeds=seeds)
         checked_results = [dict(result) for result in results]
         observations = np.stack([self._observation(result) for result in checked_results])
         observations[:, 5] = 1.0
@@ -132,6 +146,15 @@ class RobloxObbyBatch:
         self._last_observations[:] = observations
         self._update_student_observations(checked_results)
         infos = [dict(result.get("info", {})) for result in results]
+        for index, info in enumerate(infos):
+            if "restored_jump_cooldown" in info:
+                self._jump_cooldown[index] = int(info["restored_jump_cooldown"])
+                observations[index, 5] = float(self._jump_cooldown[index] == 0)
+                self._last_observations[index, 5] = observations[index, 5]
+                self._last_student_observations[index, 5] = observations[index, 5]
+        self._checkpoint_indices[:] = np.asarray(
+            [int(info.get("checkpoint_index", 0)) for info in infos], dtype=np.int32
+        )
         return observations, infos
 
     def step(
@@ -143,6 +166,10 @@ class RobloxObbyBatch:
         checkpoint_distance = np.linalg.norm(
             self._last_observations[:, 6:9] * np.asarray([64.0, 32.0, 64.0]), axis=1
         )
+        pre_step_local_velocity = self._last_observations[:, :3].copy()
+        pre_step_grounded = self._last_observations[:, 4] > 0.5
+        pre_step_route_features = self._last_observations[:, 9:12].copy()
+        pre_step_progress = self._last_observations[:, 12].copy()
         gap = self._last_observations[:, 9] * 10.0
         gap_shift = np.where(gap > 0, gap - 7.0, 0.0)
         takeoff_window = (
@@ -176,6 +203,7 @@ class RobloxObbyBatch:
                     "forward": 1.0 if self.scripted_forward else float(action[1]),
                     "yaw": 0.0 if self.scripted_forward else float(action[2]) * self.yaw_scale,
                     "jump": bool(jump),
+                    "jump_cooldown_remaining": int(self._jump_cooldown[index]),
                 }
             )
         results = self.transport.vector_step(commands)
@@ -227,6 +255,18 @@ class RobloxObbyBatch:
             info["movement_action_delta"] = float(movement_delta[index])
             info["jump_takeoff_distance"] = float(checkpoint_distance[index])
             info["jump_takeoff_allowed"] = bool(takeoff_window[index])
+            info["jump_intent_active"] = bool(raw_jump_active[index])
+            info["jump_intent_value"] = float(checked[index, 3])
+            info["jump_command_applied"] = bool(jump_commands[index])
+            info["jump_cooldown_remaining"] = int(self._jump_cooldown[index])
+            info["pre_step_local_velocity"] = [
+                float(value) for value in pre_step_local_velocity[index]
+            ]
+            info["pre_step_grounded"] = bool(pre_step_grounded[index])
+            info["pre_step_route_features"] = [
+                float(value) for value in pre_step_route_features[index]
+            ]
+            info["pre_step_progress"] = float(pre_step_progress[index])
             if feasibility_probability is not None:
                 info["jump_feasibility_probability"] = float(feasibility_probability[index])
         self._previous_movement[:] = applied_movement
@@ -234,6 +274,20 @@ class RobloxObbyBatch:
         self._last_observations[:] = observations
         self._checkpoint_indices[:] = current_checkpoint_indices
         self._update_student_observations(checked_results)
+        hazard_recovered = np.asarray(
+            [bool(info.get("hazard_recovered")) for info in infos], dtype=np.bool_
+        )
+        if np.any(hazard_recovered):
+            # Roblox has already moved these rigs back to their latest recovery
+            # checkpoint. Start the new life with neutral controller state too,
+            # rather than carrying the failed jump's cooldown or held movement.
+            self._jump_active[hazard_recovered] = False
+            self._jump_cooldown[hazard_recovered] = 0
+            self._previous_movement[hazard_recovered] = 0
+            self._has_previous_movement[hazard_recovered] = False
+            observations[hazard_recovered, 5] = 1.0
+            self._last_observations[hazard_recovered, 5] = 1.0
+            self._last_student_observations[hazard_recovered, 5] = 1.0
         terminated = np.asarray(
             [
                 bool(result["terminated"])
@@ -250,7 +304,10 @@ class RobloxObbyBatch:
         return observations, rewards, terminated, truncated, infos
 
     def reset_lanes(
-        self, seeds: list[int], reset_mask: np.ndarray
+        self,
+        seeds: list[int],
+        reset_mask: np.ndarray,
+        post_landing_mask: np.ndarray | None = None,
     ) -> tuple[np.ndarray, list[dict[str, Any]]]:
         checked_mask = np.asarray(reset_mask, dtype=np.bool_)
         if len(seeds) != self.num_envs or checked_mask.shape != (self.num_envs,):
@@ -260,8 +317,25 @@ class RobloxObbyBatch:
         self._previous_movement[checked_mask] = 0
         self._has_previous_movement[checked_mask] = False
         self._decision_steps[checked_mask] = 0
-        self._checkpoint_indices[checked_mask] = 0
-        results = self.transport.vector_reset_lanes(seeds=seeds, reset_mask=checked_mask.tolist())
+        landing_mask = (
+            np.zeros(self.num_envs, dtype=np.bool_)
+            if post_landing_mask is None
+            else np.asarray(post_landing_mask, dtype=np.bool_)
+        )
+        if landing_mask.shape != (self.num_envs,):
+            raise ValueError("post-landing mask must match num_envs")
+        landing_mask &= checked_mask
+        self._checkpoint_indices[checked_mask] = landing_mask[checked_mask].astype(np.int32)
+        if np.any(landing_mask):
+            results = self.transport.vector_reset_lanes(
+                seeds=seeds,
+                reset_mask=checked_mask.tolist(),
+                post_landing_mask=landing_mask.tolist(),
+            )
+        else:
+            results = self.transport.vector_reset_lanes(
+                seeds=seeds, reset_mask=checked_mask.tolist()
+            )
         checked_results = [dict(result) for result in results]
         observations = np.stack([self._observation(result) for result in checked_results])
         observations[:, 5] = (self._jump_cooldown == 0).astype(np.float32)
@@ -271,6 +345,16 @@ class RobloxObbyBatch:
         student[:, 5] = (self._jump_cooldown == 0).astype(np.float32)
         self._last_student_observations[checked_mask] = student[checked_mask]
         infos = [dict(result.get("info", {})) for result in results]
+        for index, info in enumerate(infos):
+            if checked_mask[index] and "restored_jump_cooldown" in info:
+                self._jump_cooldown[index] = int(info["restored_jump_cooldown"])
+                observations[index, 5] = float(self._jump_cooldown[index] == 0)
+                student[index, 5] = observations[index, 5]
+                self._last_observations[index, 5] = observations[index, 5]
+                self._last_student_observations[index, 5] = observations[index, 5]
+        self._checkpoint_indices[checked_mask] = np.asarray(
+            [int(info.get("checkpoint_index", 0)) for info in infos], dtype=np.int32
+        )[checked_mask]
         return observations, infos
 
     def close(self) -> None:
@@ -292,6 +376,7 @@ class RobloxBatchedVecEnv(VecEnv):
         curriculum_replay: list[tuple[int, float]] | None = None,
         curriculum_sampler_seed: int = 0,
         scripted_forward_replay_probability: float = 0.0,
+        post_landing_reset_probability: float = 0.0,
     ) -> None:
         self.batch = batch
         self.render_mode = None
@@ -308,6 +393,9 @@ class RobloxBatchedVecEnv(VecEnv):
         if not 0 <= scripted_forward_replay_probability <= 1:
             raise ValueError("scripted forward replay probability must be within [0, 1]")
         self.scripted_forward_replay_probability = float(scripted_forward_replay_probability)
+        if not 0 <= post_landing_reset_probability <= 1:
+            raise ValueError("post-landing reset probability must be within [0, 1]")
+        self.post_landing_reset_probability = float(post_landing_reset_probability)
         self.current_curriculum_stage = int(getattr(batch.transport, "curriculum_stage", 0))
         self._next_course_seed = self.course_seed
         self.max_episode_steps = int(max_episode_steps)
@@ -337,6 +425,31 @@ class RobloxBatchedVecEnv(VecEnv):
             return seeds
         return [self.course_seed if seed is None else int(seed) for seed in self._seeds]
 
+    def _post_landing_mask(self, reset_mask: np.ndarray | None = None) -> np.ndarray:
+        eligible = (
+            np.ones(self.num_envs, dtype=np.bool_)
+            if reset_mask is None
+            else np.asarray(reset_mask, dtype=np.bool_).copy()
+        )
+        result = np.zeros(self.num_envs, dtype=np.bool_)
+        if (
+            self.current_curriculum_stage not in {20, 21, 22, 23}
+            or self.post_landing_reset_probability <= 0
+        ):
+            return result
+        indices = np.flatnonzero(eligible)
+        if reset_mask is None:
+            count = int(round(len(indices) * self.post_landing_reset_probability))
+            if count > 0:
+                selected = self._curriculum_rng.choice(indices, size=count, replace=False)
+                result[selected] = True
+        else:
+            result[indices] = (
+                self._curriculum_rng.random(len(indices))
+                < self.post_landing_reset_probability
+            )
+        return result
+
     def _reset_batch(self, seeds: list[int]) -> tuple[np.ndarray, list[dict[str, Any]]]:
         if self.scripted_forward_replay_probability > 0:
             self.batch.scripted_forward = bool(
@@ -348,7 +461,7 @@ class RobloxBatchedVecEnv(VecEnv):
             weights /= weights.sum()
             self.current_curriculum_stage = int(self._curriculum_rng.choice(stages, p=weights))
             self.batch.transport.curriculum_stage = self.current_curriculum_stage
-        return self.batch.reset(seeds)
+        return self.batch.reset(seeds, self._post_landing_mask())
 
     def reset(self) -> np.ndarray:
         observations, infos = self._reset_batch(self._course_seeds())
@@ -412,7 +525,7 @@ class RobloxBatchedVecEnv(VecEnv):
                 reset_observations, reset_infos = self._reset_batch(self._course_seeds())
             else:
                 reset_observations, reset_infos = self.batch.reset_lanes(
-                    self._course_seeds(dones), dones
+                    self._course_seeds(dones), dones, self._post_landing_mask(dones)
                 )
             observations[dones] = reset_observations[dones]
             for index in np.flatnonzero(dones):

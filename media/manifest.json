@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "captures": [
+    {
+      "id": "obby-completion",
+      "role": "hero",
+      "source": "candidates/video/obby-completion.mov",
+      "poster": "candidates/images/obby-completion.png",
+      "duration_seconds": [15, 30],
+      "status": "needed",
+      "required_evidence": "Uncut deterministic completion on a held-out multi-obstacle seed"
+    },
+    {
+      "id": "course-generation",
+      "role": "method",
+      "source": "candidates/video/course-generation.mov",
+      "poster": "candidates/images/course-generation.png",
+      "duration_seconds": [6, 10],
+      "status": "needed",
+      "required_evidence": "At least four visibly different seeded valid courses from one overview camera"
+    },
+    {
+      "id": "parallel-training",
+      "role": "infrastructure",
+      "source": "candidates/video/parallel-training.mov",
+      "poster": "candidates/images/parallel-training.png",
+      "duration_seconds": [8, 12],
+      "status": "needed",
+      "required_evidence": "All eight isolated simulation lanes visible and advancing simultaneously"
+    },
+    {
+      "id": "varied-jumps",
+      "role": "generalization",
+      "source": "candidates/video/varied-jumps.mov",
+      "poster": "candidates/images/varied-jumps.png",
+      "duration_seconds": [10, 16],
+      "status": "needed",
+      "required_evidence": "Short, long, high-to-low, low-to-high, and angled jump examples"
+    }
+  ]
+}
+

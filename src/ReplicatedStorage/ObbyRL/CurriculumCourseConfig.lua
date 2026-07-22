@@ -9,7 +9,7 @@ local function mutableBase(): any
 end
 
 function Curriculum.forStage(stage: number): any
-	assert(stage >= 1 and stage <= 22, "curriculum stage must be 1..22")
+	assert(stage >= 1 and stage <= 24, "curriculum stage must be 1..24")
 	local config = mutableBase()
 	if stage == 1 then
 		config.stageCount = 1
@@ -62,8 +62,10 @@ function Curriculum.forStage(stage: number): any
 			config.jumpHeightMin = -3
 			config.jumpHeightMax = -0.5
 		elseif stage == 8 then
-			config.gapMin = 6.5
-			config.gapMax = 7.5
+			-- Uphill landings reduce the usable horizontal jump envelope. Keep this
+			-- prerequisite substantially shorter than the flat/high-to-low stages.
+			config.gapMin = 4
+			config.gapMax = 5
 			config.jumpHeightMin = 0.5
 			config.jumpHeightMax = 3
 		elseif stage == 9 then
@@ -148,10 +150,40 @@ function Curriculum.forStage(stage: number): any
 		elseif stage == 21 then
 			config.stageCount = 4
 			config.segmentKinds = { "gap", "offset", "beam", "stairs" }
-		else
+		elseif stage == 22 then
 			-- Eight-segment training alias for the final Stage 4 benchmark.
 			config.stageCount = 8
 			config.segmentKinds = { "gap", "offset", "beam", "stairs" }
+		elseif stage == 23 then
+			-- Two required-jump transitions. Using offset segments permits zero-angle
+			-- samples while also combining lateral angle and landing-height variation.
+			-- The six-stud lower bound intentionally removes the shortest walkable
+			-- gaps from the mixed Stage 20 distribution.
+			config.stageCount = 2
+			config.segmentKinds = { "offset" }
+			config.gapMin = 6
+			config.gapMax = 8
+			config.uphillGapMin = 4
+			config.uphillGapMax = 5
+			config.uphillGapHeightThreshold = 0
+			config.jumpHeightMin = -3
+			config.jumpHeightMax = 3
+			config.approachAngleMin = -18
+			config.approachAngleMax = 18
+			config.maxJumpGap = 8
+			config.maxLateralOffset = 7
+			config.maxOracleJumpDistance = 11
+		else
+			-- Zero-shot stress test: require lateral alignment before traversing a
+			-- familiar narrow beam. Kept separate from mastered centered Stage 18.
+			config.stageCount = 1
+			config.segmentKinds = { "beam" }
+			config.beamWidthMin = 3
+			config.beamWidthMax = 6
+			config.beamLengthMin = 8
+			config.beamLengthMax = 16
+			config.beamDiagonalCornerOffsetMin = 3.5
+			config.beamDiagonalCornerOffsetMax = 4.5
 		end
 	end
 	config.curriculumStage = stage

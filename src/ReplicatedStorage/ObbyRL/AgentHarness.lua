@@ -79,15 +79,66 @@ function AgentHarness.reset(state: State)
 	state.recoveryCFrame = state.spawnCFrame
 	state.character:PivotTo(state.spawnCFrame + Vector3.new(0, 3, 0))
 	state.humanoid:Move(Vector3.zero, false)
+	state.humanoid.Jump = false
+	state.humanoid.Sit = false
+	state.humanoid.PlatformStand = false
 	state.root.AssemblyLinearVelocity = Vector3.zero
 	state.root.AssemblyAngularVelocity = Vector3.zero
 	state.humanoid.Health = state.humanoid.MaxHealth
+	state.character:SetAttribute("CheckpointIndex", 0)
 	state.previousAction = table.clone(ZERO_ACTION)
+end
+
+function AgentHarness.captureLandingSnapshot(state: State, jumpCooldown: number): any
+	return {
+		checkpointIndex = state.checkpointIndex,
+		rootCFrame = state.root.CFrame,
+		linearVelocity = state.root.AssemblyLinearVelocity,
+		angularVelocity = state.root.AssemblyAngularVelocity,
+		previousAction = table.clone(state.previousAction),
+		jumpCooldown = jumpCooldown,
+	}
+end
+
+function AgentHarness.restoreLandingSnapshot(state: State, snapshot: any)
+	local checkpointIndex = snapshot.checkpointIndex
+	local nextCheckpoint = state.checkpoints[checkpointIndex + 1]
+	assert(nextCheckpoint ~= nil, "landing snapshot requires a following checkpoint")
+	state.checkpointIndex = checkpointIndex
+	state.checkpoint = nextCheckpoint
+	state.recoveryCFrame = snapshot.rootCFrame
+	state.character:PivotTo(snapshot.rootCFrame)
+	state.humanoid:Move(Vector3.zero, false)
+	state.humanoid.Jump = false
+	state.humanoid.Sit = false
+	state.humanoid.PlatformStand = false
+	state.humanoid.Health = state.humanoid.MaxHealth
+	state.root.AssemblyLinearVelocity = snapshot.linearVelocity
+	state.root.AssemblyAngularVelocity = snapshot.angularVelocity
+	state.character:SetAttribute("CheckpointIndex", checkpointIndex)
+	state.previousAction = table.clone(snapshot.previousAction)
+end
+
+function AgentHarness.neutralizePose(state: State)
+	local animator = state.humanoid:FindFirstChildOfClass("Animator")
+	if animator then
+		for _, track in animator:GetPlayingAnimationTracks() do
+			track:Stop(0)
+		end
+	end
+	for _, descendant in state.character:GetDescendants() do
+		if descendant:IsA("Motor6D") then
+			descendant.Transform = CFrame.identity
+		end
+	end
 end
 
 function AgentHarness.recover(state: State)
 	state.character:PivotTo(state.recoveryCFrame + Vector3.new(0, 3, 0))
 	state.humanoid:Move(Vector3.zero, false)
+	state.humanoid.Jump = false
+	state.humanoid.Sit = false
+	state.humanoid.PlatformStand = false
 	state.root.AssemblyLinearVelocity = Vector3.zero
 	state.root.AssemblyAngularVelocity = Vector3.zero
 	state.humanoid.Health = state.humanoid.MaxHealth
@@ -98,6 +149,12 @@ function AgentHarness.advanceCheckpoint(state: State): boolean
 	local nextIndex = state.checkpointIndex + 1
 	local nextCheckpoint = state.checkpoints[nextIndex]
 	if not nextCheckpoint then
+		return false
+	end
+	-- Passing through the checkpoint volume in midair is not a successful
+	-- platform landing. Without this guard, a near miss could advance the target
+	-- (or terminate the course) before the avatar established ground contact.
+	if state.humanoid.FloorMaterial == Enum.Material.Air then
 		return false
 	end
 	local delta = state.root.Position - nextCheckpoint
@@ -147,8 +204,15 @@ function AgentHarness.stop(state: State)
 end
 
 function AgentHarness.observe(state: State): { number }
-	local route = state.courseEnd - state.courseStart
-	local progress = (state.root.Position - state.courseStart):Dot(route.Unit) / route.Magnitude
+	local segment = if state.manifest.segments
+		then state.manifest.segments[state.checkpointIndex + 1]
+		else nil
+	local segmentStart = if segment then segment.entryPosition else state.courseStart
+	local segmentEnd = if segment then segment.exitPosition else state.courseEnd
+	local route = segmentEnd - segmentStart
+	local progress = if route.Magnitude > 0
+		then (state.root.Position - segmentStart):Dot(route.Unit) / route.Magnitude
+		else 0
 	local geometry = state.checkpointGeometry[state.checkpointIndex + 1]
 	return ObservationBuilder.build(
 		state.root,

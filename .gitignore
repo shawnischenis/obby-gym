@@ -6,9 +6,15 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+*.mov
+*.rbxlx.lock
 ObbyRL.rbxl
 ObbyRL.rbxlx
 runs/*
 !runs/README.md
 artifacts/*
 !artifacts/README.md
+media/candidates/images/*
+!media/candidates/images/.gitkeep
+media/candidates/video/*
+!media/candidates/video/.gitkeep

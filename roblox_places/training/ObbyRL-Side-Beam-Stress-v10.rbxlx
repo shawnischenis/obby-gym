@@ -1,0 +1,1626 @@
+<roblox version="4">
+  <Item class="HttpService" referent="0">
+    <Properties>
+      <string name="Name">HttpService</string>
+      <bool name="HttpEnabled">true</bool>
+    </Properties>
+  </Item>
+  <Item class="ReplicatedStorage" referent="1">
+    <Properties>
+      <string name="Name">ReplicatedStorage</string>
+    </Properties>
+    <Item class="Folder" referent="2">
+      <Properties>
+        <string name="Name">ObbyRL</string>
+      </Properties>
+      <Item class="ModuleScript" referent="3">
+        <Properties>
+          <string name="Name">AgentHarness</string>
+          <string name="Source"><![CDATA[--!strict
+
+local ObservationBuilder = require(script.Parent.ObservationBuilder)
+
+local AgentHarness = {}
+
+export type Action = { strafe: number, forward: number, yaw: number, jump: boolean }
+export type State = {
+	character: Model,
+	humanoid: Humanoid,
+	root: BasePart,
+	spawnCFrame: CFrame,
+	checkpoint: Vector3,
+	checkpoints: { Vector3 },
+	checkpointGeometry: { Vector3 },
+	checkpointIndex: number,
+	recoveryCFrame: CFrame,
+	finish: Vector3,
+	courseStart: Vector3,
+	courseEnd: Vector3,
+	manifest: any,
+	previousAction: Action,
+}
+
+local ZERO_ACTION: Action = { strafe = 0, forward = 0, yaw = 0, jump = false }
+
+function AgentHarness.new(character: Model, manifest: any): State
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	assert(humanoid ~= nil, "character requires a Humanoid")
+	assert(root ~= nil and root:IsA("BasePart"), "character requires HumanoidRootPart")
+	-- Humanoid.AutoRotate would turn toward a strafe command. Because actions are
+	-- expressed in the root's local frame, that rotation feeds back into the next
+	-- command and makes sustained strafing trace a circle. Agent yaw is explicit.
+	humanoid.AutoRotate = false
+	local checkpoints: { Vector3 } = {}
+	local checkpointGeometry: { Vector3 } = {}
+	if manifest.segments then
+		for _, segment in manifest.segments do
+			table.insert(checkpoints, segment.checkpointPosition)
+			if segment.kind == "gap" or segment.kind == "offset" then
+				table.insert(
+					checkpointGeometry,
+					Vector3.new(
+						segment.parameters.gap / 10,
+						segment.parameters.height / 3,
+						segment.parameters.angle / 18
+					)
+				)
+			else
+				table.insert(checkpointGeometry, Vector3.new(-1, 0, 0))
+			end
+		end
+	elseif manifest.checkpointPosition then
+		table.insert(checkpoints, manifest.checkpointPosition)
+	end
+	local firstCheckpoint = checkpoints[1] or manifest.finishPosition
+	return {
+		character = character,
+		humanoid = humanoid,
+		root = root,
+		spawnCFrame = manifest.spawnCFrame,
+		checkpoint = firstCheckpoint,
+		checkpoints = checkpoints,
+		checkpointGeometry = checkpointGeometry,
+		checkpointIndex = 0,
+		recoveryCFrame = manifest.spawnCFrame,
+		finish = manifest.finishPosition,
+		courseStart = manifest.courseStart,
+		courseEnd = manifest.courseEnd,
+		manifest = manifest,
+		previousAction = table.clone(ZERO_ACTION),
+	}
+end
+
+function AgentHarness.reset(state: State)
+	state.checkpointIndex = 0
+	state.checkpoint = state.checkpoints[1] or state.finish
+	state.recoveryCFrame = state.spawnCFrame
+	state.character:PivotTo(state.spawnCFrame + Vector3.new(0, 3, 0))
+	state.humanoid:Move(Vector3.zero, false)
+	state.humanoid.Jump = false
+	state.humanoid.Sit = false
+	state.humanoid.PlatformStand = false
+	state.root.AssemblyLinearVelocity = Vector3.zero
+	state.root.AssemblyAngularVelocity = Vector3.zero
+	state.humanoid.Health = state.humanoid.MaxHealth
+	state.character:SetAttribute("CheckpointIndex", 0)
+	state.previousAction = table.clone(ZERO_ACTION)
+end
+
+function AgentHarness.captureLandingSnapshot(state: State, jumpCooldown: number): any
+	return {
+		checkpointIndex = state.checkpointIndex,
+		rootCFrame = state.root.CFrame,
+		linearVelocity = state.root.AssemblyLinearVelocity,
+		angularVelocity = state.root.AssemblyAngularVelocity,
+		previousAction = table.clone(state.previousAction),
+		jumpCooldown = jumpCooldown,
+	}
+end
+
+function AgentHarness.restoreLandingSnapshot(state: State, snapshot: any)
+	local checkpointIndex = snapshot.checkpointIndex
+	local nextCheckpoint = state.checkpoints[checkpointIndex + 1]
+	assert(nextCheckpoint ~= nil, "landing snapshot requires a following checkpoint")
+	state.checkpointIndex = checkpointIndex
+	state.checkpoint = nextCheckpoint
+	state.recoveryCFrame = snapshot.rootCFrame
+	state.character:PivotTo(snapshot.rootCFrame)
+	state.humanoid:Move(Vector3.zero, false)
+	state.humanoid.Jump = false
+	state.humanoid.Sit = false
+	state.humanoid.PlatformStand = false
+	state.humanoid.Health = state.humanoid.MaxHealth
+	state.root.AssemblyLinearVelocity = snapshot.linearVelocity
+	state.root.AssemblyAngularVelocity = snapshot.angularVelocity
+	state.character:SetAttribute("CheckpointIndex", checkpointIndex)
+	state.previousAction = table.clone(snapshot.previousAction)
+end
+
+function AgentHarness.recover(state: State)
+	state.character:PivotTo(state.recoveryCFrame + Vector3.new(0, 3, 0))
+	state.humanoid:Move(Vector3.zero, false)
+	state.humanoid.Jump = false
+	state.humanoid.Sit = false
+	state.humanoid.PlatformStand = false
+	state.root.AssemblyLinearVelocity = Vector3.zero
+	state.root.AssemblyAngularVelocity = Vector3.zero
+	state.humanoid.Health = state.humanoid.MaxHealth
+	state.previousAction = table.clone(ZERO_ACTION)
+end
+
+function AgentHarness.advanceCheckpoint(state: State): boolean
+	local nextIndex = state.checkpointIndex + 1
+	local nextCheckpoint = state.checkpoints[nextIndex]
+	if not nextCheckpoint then
+		return false
+	end
+	-- Passing through the checkpoint volume in midair is not a successful
+	-- platform landing. Without this guard, a near miss could advance the target
+	-- (or terminate the course) before the avatar established ground contact.
+	if state.humanoid.FloorMaterial == Enum.Material.Air then
+		return false
+	end
+	local delta = state.root.Position - nextCheckpoint
+	if math.abs(delta.X) > 6 or math.abs(delta.Z) > 6 or math.abs(delta.Y) > 6 then
+		return false
+	end
+	state.checkpointIndex = nextIndex
+	state.recoveryCFrame =
+		CFrame.lookAt(nextCheckpoint + Vector3.new(0, 0, 3), nextCheckpoint + Vector3.new(0, 0, -1))
+	state.checkpoint = state.checkpoints[nextIndex + 1] or state.finish
+	state.character:SetAttribute("CheckpointIndex", nextIndex)
+	return true
+end
+
+function AgentHarness.refreshMovement(state: State, action: Action)
+	local strafe = math.clamp(action.strafe, -1, 1)
+	local forward = math.clamp(action.forward, -1, 1)
+	local localMove = Vector3.new(strafe, 0, -forward)
+	if localMove.Magnitude > 1 then
+		localMove = localMove.Unit
+	end
+	local worldMove = state.root.CFrame:VectorToWorldSpace(localMove)
+	state.humanoid:Move(worldMove, false)
+	return strafe, forward
+end
+
+function AgentHarness.applyAction(state: State, action: Action)
+	local strafe, forward = AgentHarness.refreshMovement(state, action)
+	local yaw = math.clamp(action.yaw, -1, 1)
+	if math.abs(yaw) > 0.001 then
+		state.root.CFrame = state.root.CFrame * CFrame.Angles(0, math.rad(yaw * 8), 0)
+	end
+	if action.jump then
+		state.humanoid.Jump = true
+	end
+	state.previousAction = { strafe = strafe, forward = forward, yaw = yaw, jump = action.jump }
+end
+
+function AgentHarness.refreshJump(state: State, action: Action)
+	if action.jump then
+		state.humanoid.Jump = true
+	end
+end
+
+function AgentHarness.stop(state: State)
+	state.humanoid:Move(Vector3.zero, false)
+end
+
+function AgentHarness.observe(state: State): { number }
+	local segment = if state.manifest.segments
+		then state.manifest.segments[state.checkpointIndex + 1]
+		else nil
+	local segmentStart = if segment then segment.entryPosition else state.courseStart
+	local segmentEnd = if segment then segment.exitPosition else state.courseEnd
+	local route = segmentEnd - segmentStart
+	local progress = if route.Magnitude > 0
+		then (state.root.Position - segmentStart):Dot(route.Unit) / route.Magnitude
+		else 0
+	local geometry = state.checkpointGeometry[state.checkpointIndex + 1]
+	return ObservationBuilder.build(
+		state.root,
+		state.humanoid,
+		state.checkpoint,
+		state.finish,
+		progress,
+		state.previousAction,
+		{ state.character },
+		-- checkpointGeometry always carries the route-feature contract. Non-jump
+		-- segments use the stable (-1, 0, 0) sentinel instead of falling back to
+		-- a course-end vector whose meaning changes with remaining course length.
+		geometry
+	)
+end
+
+local function appendVector(values: { number }, value: Vector3, scale: Vector3)
+	table.insert(values, value.X / scale.X)
+	table.insert(values, value.Y / scale.Y)
+	table.insert(values, value.Z / scale.Z)
+end
+
+local function platformForStage(manifest: any, stage: number): any?
+	for _, part in manifest.parts or {} do
+		if part.kind == "platform" and part.stage == stage then
+			return part
+		end
+	end
+	return nil
+end
+
+-- This payload is deliberately separate from observe(). Student policies retain
+-- the stable 22-value partial-observation contract, while a teacher can consume
+-- exact simulator geometry and character physics during training.
+function AgentHarness.observePrivileged(state: State): { number }
+	local values = AgentHarness.observe(state)
+	local segmentIndex = state.checkpointIndex + 1
+	local segment = if state.manifest.segments then state.manifest.segments[segmentIndex] else nil
+	local entryPlatform = platformForStage(state.manifest, state.checkpointIndex)
+	local landingPlatform = platformForStage(state.manifest, segmentIndex)
+	local entryPosition = if segment then segment.entryPosition else state.courseStart
+	local landingSize = if landingPlatform then landingPlatform.size else Vector3.zero
+	local parameters = if segment then segment.parameters else {}
+
+	appendVector(values, state.root.Position - state.courseStart, Vector3.new(128, 64, 128))
+	appendVector(values, state.checkpoint - state.root.Position, Vector3.new(64, 32, 64))
+	appendVector(values, entryPosition - state.root.Position, Vector3.new(64, 32, 64))
+	appendVector(values, landingSize, Vector3.new(32, 16, 32))
+	table.insert(values, (parameters.gap or 0) / 12)
+	table.insert(values, (parameters.height or 0) / 6)
+	table.insert(values, (parameters.angle or 0) / 45)
+	table.insert(values, (parameters.offset or 0) / 24)
+	table.insert(values, (state.root.Position - entryPosition).Magnitude / 64)
+	table.insert(values, state.humanoid.WalkSpeed / 32)
+	table.insert(values, state.humanoid.JumpPower / 100)
+	table.insert(values, state.humanoid.JumpHeight / 16)
+	table.insert(values, state.humanoid.HipHeight / 4)
+	table.insert(values, workspace.Gravity / 256)
+	table.insert(values, state.checkpointIndex / 16)
+	table.insert(values, #(state.manifest.segments or {}) / 16)
+	-- Presence flags prevent a zero-sized fallback from looking like real geometry.
+	table.insert(values, if entryPlatform then 1 else 0)
+	table.insert(values, if landingPlatform then 1 else 0)
+	return values
+end
+
+return AgentHarness
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="4">
+        <Properties>
+          <string name="Name">Config</string>
+          <string name="Source"><![CDATA[--!strict
+
+return table.freeze({
+	CONFIG_VERSION = "0.1.0",
+	PROTOCOL_VERSION = "0.1.0",
+	GENERATOR_VERSION = "0.1.0",
+	OBSERVATION_SCHEMA = "obby-structured-v1",
+	ACTION_SCHEMA = "obby-action-v1",
+
+	AVATAR_RIG = Enum.HumanoidRigType.R15,
+	CONTROLLER = "HumanoidMove",
+	DECISION_HZ = 20,
+	PHYSICS_HZ = 60,
+	ACTION_REPEAT_TICKS = 3,
+	EPISODE_TIME_LIMIT_SECONDS = 20,
+	FALL_Y = -25,
+	WORKSPACE_GRAVITY = 196.2,
+
+	BRIDGE_BASE_URL = "http://127.0.0.1:8765",
+	BRIDGE_LOCAL_ONLY = true,
+	REQUEST_TIMEOUT_SECONDS = 5,
+	ROLLOUT_BATCH_STEPS = 32,
+})
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="5">
+        <Properties>
+          <string name="Name">CourseGenerator</string>
+          <string name="Source"><![CDATA[--!strict
+
+export type GapConfig = {
+	startPosition: Vector3,
+	headingDegrees: number,
+	platformWidth: number,
+	platformLength: number,
+	platformHeight: number,
+	gapMin: number,
+	gapMax: number,
+	finishDepth: number,
+	killPlaneY: number,
+}
+
+export type Manifest = {
+	seed: number,
+	generatorVersion: string,
+	gap: number,
+	spawnCFrame: CFrame,
+	checkpointPosition: Vector3,
+	finishPosition: Vector3,
+	courseStart: Vector3,
+	courseEnd: Vector3,
+}
+
+local CourseGenerator = {}
+local GENERATOR_VERSION = "0.1.0"
+
+local function makePart(name: string, size: Vector3, cframe: CFrame, color: Color3): Part
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Size = size
+	part.CFrame = cframe
+	part.Color = color
+	part.Anchored = true
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	return part
+end
+
+function CourseGenerator.manifest(seed: number, config: GapConfig): Manifest
+	assert(config.gapMax >= config.gapMin, "gapMax must be >= gapMin")
+	local random = Random.new(seed)
+	local gap = random:NextNumber(config.gapMin, config.gapMax)
+	local heading = CFrame.Angles(0, math.rad(config.headingDegrees), 0)
+	local forward = heading.LookVector
+	local start = config.startPosition
+	local secondCenter = start + forward * (config.platformLength + gap + config.platformLength / 2)
+	local checkpoint = secondCenter - forward * (config.platformLength / 2 - 2)
+	local finish = secondCenter + forward * (config.platformLength / 2 - config.finishDepth / 2)
+
+	return {
+		seed = seed,
+		generatorVersion = GENERATOR_VERSION,
+		gap = gap,
+		spawnCFrame = CFrame.lookAt(start - forward * (config.platformLength / 2 - 3), start),
+		checkpointPosition = checkpoint,
+		finishPosition = finish,
+		courseStart = start - forward * (config.platformLength / 2),
+		courseEnd = secondCenter + forward * (config.platformLength / 2),
+	}
+end
+
+function CourseGenerator.build(seed: number, config: GapConfig, parent: Instance): Manifest
+	local manifest = CourseGenerator.manifest(seed, config)
+	local old = parent:FindFirstChild("GeneratedCourse")
+	if old then
+		old:Destroy()
+	end
+
+	local model = Instance.new("Model")
+	model.Name = "GeneratedCourse"
+	model:SetAttribute("CourseSeed", seed)
+	model:SetAttribute("GeneratorVersion", manifest.generatorVersion)
+	model:SetAttribute("GapStuds", manifest.gap)
+
+	local heading = CFrame.Angles(0, math.rad(config.headingDegrees), 0)
+	local forward = heading.LookVector
+	local firstCenter = config.startPosition
+	local secondCenter = firstCenter + forward * (config.platformLength + manifest.gap)
+	local platformSize =
+		Vector3.new(config.platformWidth, config.platformHeight, config.platformLength)
+	local platformOffset = Vector3.new(0, -config.platformHeight / 2, 0)
+	local first = makePart(
+		"StartPlatform",
+		platformSize,
+		CFrame.new(firstCenter + platformOffset) * heading,
+		Color3.fromRGB(75, 145, 210)
+	)
+	first.Parent = model
+	local second = makePart(
+		"LandingPlatform",
+		platformSize,
+		CFrame.new(secondCenter + platformOffset) * heading,
+		Color3.fromRGB(80, 190, 110)
+	)
+	second.Parent = model
+
+	local finish = makePart(
+		"Finish",
+		Vector3.new(config.platformWidth, 0.2, config.finishDepth),
+		CFrame.new(manifest.finishPosition + Vector3.new(0, 0.1, 0)) * heading,
+		Color3.fromRGB(245, 210, 60)
+	)
+	finish.CanCollide = false
+	finish:SetAttribute("Finish", true)
+	finish.Parent = model
+
+	local killPlane = makePart(
+		"KillPlane",
+		Vector3.new(200, 1, 200),
+		CFrame.new(config.startPosition.X, config.killPlaneY, config.startPosition.Z),
+		Color3.fromRGB(190, 45, 45)
+	)
+	killPlane.Transparency = 0.35
+	killPlane:SetAttribute("Hazard", true)
+	killPlane.Parent = model
+	model.Parent = parent
+	return manifest
+end
+
+return CourseGenerator
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="6">
+        <Properties>
+          <string name="Name">CurriculumCourseConfig</string>
+          <string name="Source"><![CDATA[--!strict
+
+local Base = require(script.Parent.ProceduralCourseConfig)
+
+local Curriculum = {}
+
+local function mutableBase(): any
+	return table.clone(Base)
+end
+
+function Curriculum.forStage(stage: number): any
+	assert(stage >= 1 and stage <= 24, "curriculum stage must be 1..24")
+	local config = mutableBase()
+	if stage == 1 then
+		config.stageCount = 1
+		config.segmentKinds = { "beam" }
+		config.platformWidth = 200
+		config.beamWidthMin = 200
+		config.beamWidthMax = 200
+		config.beamLengthMin = 18
+		config.beamLengthMax = 18
+		config.startSafetyDepth = 100
+	elseif stage == 2 then
+		config.stageCount = 1
+		config.segmentKinds = { "gap" }
+		-- Seven studs is inside the validated jump envelope but cannot be crossed
+		-- through ordinary ground contact at running speed like the old 3.5-stud gap.
+		config.gapMin = 7
+		config.gapMax = 7
+		config.jumpHeightMin = 0
+		config.jumpHeightMax = 0
+	elseif stage == 3 then
+		config.stageCount = 1
+		config.segmentKinds = { "gap" }
+		config.gapMin = 6.5
+		config.gapMax = 7.5
+		config.jumpHeightMin = 0
+		config.jumpHeightMax = 0
+	elseif stage == 4 then
+		-- Stage 4 remains the legacy full course for saved-run compatibility.
+		config.jumpHeightMin = 0
+		config.jumpHeightMax = 0
+	else
+		config.stageCount = 1
+		config.segmentKinds = { "gap" }
+		config.jumpHeightMin = 0
+		config.jumpHeightMax = 0
+		if stage == 5 then
+			config.gapMin = 6
+			config.gapMax = 8.5
+			config.maxJumpGap = 8.5
+		elseif stage == 6 then
+			config.gapMin = 5
+			-- Nine studs is the core upper bound. The unreliable 9-10 boundary is
+			-- retained only in optional stress-test stages 16 and 17.
+			config.gapMax = 9
+			config.maxJumpGap = 9
+			config.maxOracleJumpDistance = 9
+		elseif stage == 7 then
+			config.gapMin = 6.5
+			config.gapMax = 7.5
+			config.jumpHeightMin = -3
+			config.jumpHeightMax = -0.5
+		elseif stage == 8 then
+			-- Uphill landings reduce the usable horizontal jump envelope. Keep this
+			-- prerequisite substantially shorter than the flat/high-to-low stages.
+			config.gapMin = 4
+			config.gapMax = 5
+			config.jumpHeightMin = 0.5
+			config.jumpHeightMax = 3
+		elseif stage == 9 then
+			config.segmentKinds = { "offset" }
+			config.gapMin = 6.5
+			config.gapMax = 7.5
+			config.approachAngleMin = -8
+			config.approachAngleMax = 8
+		elseif stage == 10 then
+			config.segmentKinds = { "offset" }
+			config.gapMin = 6
+			config.gapMax = 8.5
+			config.maxJumpGap = 8.5
+			config.approachAngleMin = -18
+			config.approachAngleMax = 18
+			config.maxLateralOffset = 7
+			config.maxOracleJumpDistance = 11
+		elseif stage == 11 then
+			config.segmentKinds = { "offset" }
+			config.gapMin = 5
+			config.gapMax = 9
+			config.jumpHeightMin = -3
+			config.jumpHeightMax = 3
+			config.approachAngleMin = -18
+			config.approachAngleMax = 18
+			config.maxJumpGap = 9
+			config.maxLateralOffset = 8
+			config.maxOracleJumpDistance = 13
+		elseif stage == 12 then
+			-- Intermediate expansion before the full 5-10 stud Stage 6 range.
+			config.gapMin = 5
+			config.gapMax = 9
+			config.maxJumpGap = 9
+		elseif stage == 13 then
+			-- Expand the difficult upper boundary before lowering the minimum gap.
+			config.gapMin = 6
+			config.gapMax = 9
+			config.maxJumpGap = 9
+		elseif stage == 14 then
+			-- Teach the lower boundary while holding the mastered 8.5 upper limit.
+			config.gapMin = 5
+			config.gapMax = 8.5
+			config.maxJumpGap = 8.5
+		elseif stage == 15 then
+			-- Rehearse both mastered boundary tasks before uniform 5-9 sampling.
+			config.gapRanges = { { 5, 8.5 }, { 6, 9 } }
+			config.gapMin = 5
+			config.gapMax = 9
+			config.maxJumpGap = 9
+		elseif stage == 16 then
+			-- Optional stress benchmark, excluded from the core curriculum.
+			config.segmentKinds = { "offset" }
+			config.gapMin = 9
+			config.gapMax = 10
+			config.jumpHeightMin = -3
+			config.jumpHeightMax = 3
+			config.approachAngleMin = -18
+			config.approachAngleMax = 18
+			config.maxJumpGap = 10
+			config.maxLateralOffset = 8
+			config.maxOracleJumpDistance = 13
+		elseif stage == 17 then
+			-- Optional flat stress benchmark, excluded from the core curriculum.
+			config.gapMin = 9
+			config.gapMax = 10
+			config.maxJumpGap = 10
+			config.maxOracleJumpDistance = 10
+		elseif stage == 18 then
+			-- Teach realistic narrow-beam traversal before mixed courses.
+			config.segmentKinds = { "beam" }
+			config.beamWidthMin = 3
+			config.beamWidthMax = 6
+			config.beamLengthMin = 8
+			config.beamLengthMax = 16
+		elseif stage == 19 then
+			-- Teach stair ascent/descent as an isolated obstacle family.
+			config.segmentKinds = { "stairs" }
+		elseif stage == 20 then
+			-- First checkpoint-transition curriculum.
+			config.stageCount = 2
+			config.segmentKinds = { "gap", "offset", "beam", "stairs" }
+		elseif stage == 21 then
+			config.stageCount = 4
+			config.segmentKinds = { "gap", "offset", "beam", "stairs" }
+		elseif stage == 22 then
+			-- Eight-segment training alias for the final Stage 4 benchmark.
+			config.stageCount = 8
+			config.segmentKinds = { "gap", "offset", "beam", "stairs" }
+		elseif stage == 23 then
+			-- Two required-jump transitions. Using offset segments permits zero-angle
+			-- samples while also combining lateral angle and landing-height variation.
+			-- The six-stud lower bound intentionally removes the shortest walkable
+			-- gaps from the mixed Stage 20 distribution.
+			config.stageCount = 2
+			config.segmentKinds = { "offset" }
+			config.gapMin = 6
+			config.gapMax = 8
+			config.uphillGapMin = 4
+			config.uphillGapMax = 5
+			config.uphillGapHeightThreshold = 0
+			config.jumpHeightMin = -3
+			config.jumpHeightMax = 3
+			config.approachAngleMin = -18
+			config.approachAngleMax = 18
+			config.maxJumpGap = 8
+			config.maxLateralOffset = 7
+			config.maxOracleJumpDistance = 11
+		else
+			-- Zero-shot stress test: require lateral alignment before traversing a
+			-- familiar narrow beam. Kept separate from mastered centered Stage 18.
+			config.stageCount = 1
+			config.segmentKinds = { "beam" }
+			config.beamWidthMin = 3
+			config.beamWidthMax = 6
+			config.beamLengthMin = 8
+			config.beamLengthMax = 16
+			config.beamLateralOffsetMin = 1
+			config.beamLateralOffsetMax = 2
+		end
+	end
+	config.curriculumStage = stage
+	return table.freeze(config)
+end
+
+return Curriculum
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="7">
+        <Properties>
+          <string name="Name">GapCourseConfig</string>
+          <string name="Source"><![CDATA[--!strict
+
+return table.freeze({
+	startPosition = Vector3.new(0, 4, 0),
+	headingDegrees = 0,
+	platformWidth = 12,
+	platformLength = 14,
+	platformHeight = 1,
+	gapMin = 4,
+	gapMax = 8,
+	finishDepth = 4,
+	killPlaneY = -25,
+})
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="8">
+        <Properties>
+          <string name="Name">ObservationBuilder</string>
+          <string name="Source"><![CDATA[--!strict
+
+local ObservationBuilder = {}
+ObservationBuilder.SIZE = 22
+
+local function clip(value: number, low: number, high: number): number
+	return math.clamp(value, low, high)
+end
+
+local function scaledVector(root: BasePart, target: Vector3): Vector3
+	return root.CFrame:VectorToObjectSpace(target - root.Position)
+end
+
+local function rayFraction(
+	origin: Vector3,
+	direction: Vector3,
+	length: number,
+	params: RaycastParams
+): number
+	local result = workspace:Raycast(origin, direction.Unit * length, params)
+	if result == nil then
+		return 1
+	end
+	return clip(result.Distance / length, 0, 1)
+end
+
+function ObservationBuilder.build(
+	root: BasePart,
+	humanoid: Humanoid,
+	checkpoint: Vector3,
+	finish: Vector3,
+	progress: number,
+	previousAction: { strafe: number, forward: number, yaw: number, jump: boolean },
+	ignore: { Instance },
+	jumpGeometry: Vector3?
+): { number }
+	local localVelocity = root.CFrame:VectorToObjectSpace(root.AssemblyLinearVelocity)
+	local checkpointLocal = scaledVector(root, checkpoint)
+	local finishLocal = scaledVector(root, finish)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignore
+
+	local origin = root.Position
+	local forward = root.CFrame.LookVector
+	local right = root.CFrame.RightVector
+	local down = Vector3.new(0, -1, 0)
+	local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
+	-- AgentHarness supplies a stable per-segment geometry vector. The fallback is
+	-- retained only for legacy callers outside the procedural harness.
+	local routeFeatures = jumpGeometry
+		or Vector3.new(
+			clip(finishLocal.X / 64, -1, 1),
+			clip(finishLocal.Y / 32, -1, 1),
+			clip(finishLocal.Z / 64, -1, 1)
+		)
+
+	local values = {
+		clip(localVelocity.X / 32, -1, 1),
+		clip(localVelocity.Y / 32, -1, 1),
+		clip(localVelocity.Z / 32, -1, 1),
+		clip(root.AssemblyAngularVelocity.Y / 8, -1, 1),
+		if grounded then 1 else 0,
+		if grounded then 1 else 0,
+		clip(checkpointLocal.X / 64, -1, 1),
+		clip(checkpointLocal.Y / 32, -1, 1),
+		clip(checkpointLocal.Z / 64, -1, 1),
+		routeFeatures.X,
+		routeFeatures.Y,
+		routeFeatures.Z,
+		clip(progress, 0, 1),
+		rayFraction(origin, forward, 24, params),
+		rayFraction(origin, forward + down, 24, params),
+		rayFraction(origin, down, 12, params),
+		rayFraction(origin, -right + down, 16, params),
+		rayFraction(origin, right + down, 16, params),
+		clip(previousAction.strafe, -1, 1),
+		clip(previousAction.forward, -1, 1),
+		clip(previousAction.yaw, -1, 1),
+		if previousAction.jump then 1 else 0,
+	}
+	assert(#values == ObservationBuilder.SIZE, "observation layout size mismatch")
+	return values
+end
+
+return ObservationBuilder
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="9">
+        <Properties>
+          <string name="Name">ProceduralCourseConfig</string>
+          <string name="Source"><![CDATA[--!strict
+
+return table.freeze({
+	stageCount = 8,
+	platformWidth = 12,
+	platformLength = 12,
+	platformHeight = 1,
+	gapMin = 3.5,
+	gapMax = 7,
+	offsetMin = -5,
+	offsetMax = 5,
+	beamWidthMin = 1.5,
+	beamWidthMax = 3,
+	beamLengthMin = 8,
+	beamLengthMax = 16,
+	stairCountMin = 3,
+	stairCountMax = 6,
+	stairRun = 3,
+	stairRise = 1,
+	maxJumpGap = 8,
+	maxLateralOffset = 6,
+	maxOracleJumpDistance = 9,
+	minOracleBeamWidth = 1.25,
+	maxCourseRise = 16,
+	maxGenerationAttempts = 32,
+	killPlaneY = -25,
+})
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="10">
+        <Properties>
+          <string name="Name">ProceduralCourseGenerator</string>
+          <string name="Source"><![CDATA[--!strict
+
+local ScriptedCourseOracle = require(script.Parent.ScriptedCourseOracle)
+
+export type PartSpec = {
+	name: string,
+	kind: string,
+	position: Vector3,
+	size: Vector3,
+	stage: number,
+}
+
+export type Segment = {
+	index: number,
+	kind: string,
+	entryPosition: Vector3,
+	exitPosition: Vector3,
+	checkpointPosition: Vector3,
+	parameters: { [string]: number },
+}
+
+export type Manifest = {
+	seed: number,
+	generationSeed: number,
+	generationAttempt: number,
+	rejections: { string },
+	generatorVersion: string,
+	parts: { PartSpec },
+	segments: { Segment },
+	spawnCFrame: CFrame,
+	finishPosition: Vector3,
+	courseStart: Vector3,
+	courseEnd: Vector3,
+	signature: string,
+}
+
+local Generator = {}
+local VERSION = "0.6.0"
+local KINDS = { "gap", "offset", "beam", "stairs" }
+
+local function platformSpec(index: number, position: Vector3, config: any): PartSpec
+	return {
+		name = string.format("Platform_%02d", index),
+		kind = "platform",
+		position = position,
+		size = Vector3.new(config.platformWidth, config.platformHeight, config.platformLength),
+		stage = index,
+	}
+end
+
+local function appendNumber(parts: { string }, value: number)
+	table.insert(parts, string.format("%.5f", value))
+end
+
+local function signature(
+	seed: number,
+	generationSeed: number,
+	segments: { Segment },
+	parts: { PartSpec }
+): string
+	local values = { tostring(seed), tostring(generationSeed), VERSION }
+	for _, segment in segments do
+		table.insert(values, segment.kind)
+		appendNumber(values, segment.exitPosition.X)
+		appendNumber(values, segment.exitPosition.Y)
+		appendNumber(values, segment.exitPosition.Z)
+	end
+	for _, part in parts do
+		table.insert(values, part.kind)
+		appendNumber(values, part.position.X)
+		appendNumber(values, part.position.Y)
+		appendNumber(values, part.position.Z)
+		appendNumber(values, part.size.X)
+		appendNumber(values, part.size.Y)
+		appendNumber(values, part.size.Z)
+	end
+	return table.concat(values, "|")
+end
+
+local function addJump(
+	random: Random,
+	index: number,
+	kind: string,
+	current: Vector3,
+	config: any,
+	parts: { PartSpec }
+): (Vector3, Segment)
+	local gapMin = config.gapMin
+	local gapMax = config.gapMax
+	if config.gapRanges then
+		local selectedRange = config.gapRanges[random:NextInteger(1, #config.gapRanges)]
+		gapMin = selectedRange[1]
+		gapMax = selectedRange[2]
+	end
+	local gap: number
+	local height: number
+	if config.uphillGapMin and config.uphillGapMax then
+		-- Height must be sampled first only for height-conditioned curricula.
+		-- Preserve the legacy RNG order for every existing course definition.
+		height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
+		if height > (config.uphillGapHeightThreshold or 0) then
+			gapMin = config.uphillGapMin
+			gapMax = config.uphillGapMax
+		end
+		gap = random:NextNumber(gapMin, gapMax)
+	else
+		gap = random:NextNumber(gapMin, gapMax)
+		height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
+	end
+	local offset = 0
+	local angle = 0
+	if kind == "offset" then
+		if config.approachAngleMin and config.approachAngleMax then
+			angle = random:NextNumber(config.approachAngleMin, config.approachAngleMax)
+			offset = math.tan(math.rad(angle)) * (config.platformLength + gap)
+		else
+			offset = random:NextNumber(config.offsetMin, config.offsetMax)
+			angle = math.deg(math.atan(offset / (config.platformLength + gap)))
+		end
+	end
+	local exit = current + Vector3.new(offset, height, -(config.platformLength + gap))
+	table.insert(parts, platformSpec(index, exit, config))
+	return exit,
+		{
+			index = index,
+			kind = kind,
+			entryPosition = current,
+			exitPosition = exit,
+			checkpointPosition = exit,
+			parameters = { gap = gap, offset = offset, height = height, angle = angle },
+		}
+end
+
+local function addBeam(
+	random: Random,
+	index: number,
+	current: Vector3,
+	config: any,
+	parts: { PartSpec }
+): (Vector3, Segment)
+	local length = random:NextNumber(config.beamLengthMin, config.beamLengthMax)
+	local width = random:NextNumber(config.beamWidthMin, config.beamWidthMax)
+	local lateralMagnitude = random:NextNumber(
+		config.beamLateralOffsetMin or 0,
+		config.beamLateralOffsetMax or 0
+	)
+	local lateralSign = if random:NextNumber() < 0.5 then -1 else 1
+	local lateralOffset = lateralMagnitude * lateralSign
+	local entryEdgeZ = current.Z - config.platformLength / 2
+	local beamCenter = Vector3.new(
+		current.X + lateralOffset,
+		current.Y,
+		entryEdgeZ - length / 2
+	)
+	table.insert(parts, {
+		name = string.format("Beam_%02d", index),
+		kind = "beam",
+		position = beamCenter,
+		size = Vector3.new(width, config.platformHeight, length),
+		stage = index,
+	})
+	local exit = Vector3.new(
+		current.X + lateralOffset,
+		current.Y,
+		entryEdgeZ - length - config.platformLength / 2
+	)
+	table.insert(parts, platformSpec(index, exit, config))
+	return exit,
+		{
+			index = index,
+			kind = "beam",
+			entryPosition = current,
+			exitPosition = exit,
+			checkpointPosition = exit,
+			parameters = { length = length, width = width, offset = lateralOffset },
+		}
+end
+
+local function addStairs(
+	random: Random,
+	index: number,
+	current: Vector3,
+	config: any,
+	parts: { PartSpec }
+): (Vector3, Segment)
+	local count = random:NextInteger(config.stairCountMin, config.stairCountMax)
+	local entryEdgeZ = current.Z - config.platformLength / 2
+	for stair = 1, count do
+		table.insert(parts, {
+			name = string.format("Stair_%02d_%02d", index, stair),
+			kind = "stair",
+			position = Vector3.new(
+				current.X,
+				current.Y + stair * config.stairRise,
+				entryEdgeZ - (stair - 0.5) * config.stairRun
+			),
+			size = Vector3.new(config.platformWidth, config.platformHeight, config.stairRun),
+			stage = index,
+		})
+	end
+	local exit = Vector3.new(
+		current.X,
+		current.Y + count * config.stairRise,
+		entryEdgeZ - count * config.stairRun - config.platformLength / 2
+	)
+	table.insert(parts, platformSpec(index, exit, config))
+	return exit,
+		{
+			index = index,
+			kind = "stairs",
+			entryPosition = current,
+			exitPosition = exit,
+			checkpointPosition = exit,
+			parameters = { count = count, run = config.stairRun, rise = config.stairRise },
+		}
+end
+
+local function candidate(requestedSeed: number, generationSeed: number, config: any): Manifest
+	local random = Random.new(generationSeed)
+	local start = Vector3.new(0, 4, 0)
+	local current = start
+	local parts: { PartSpec } = { platformSpec(0, start, config) }
+	if config.startSafetyDepth and config.startSafetyDepth > 0 then
+		table.insert(parts, {
+			name = "StartSafetyApron",
+			kind = "platform",
+			position = start
+				+ Vector3.new(0, 0, config.platformLength / 2 + config.startSafetyDepth / 2),
+			size = Vector3.new(
+				config.platformWidth,
+				config.platformHeight,
+				config.startSafetyDepth
+			),
+			stage = 0,
+		})
+	end
+	local segments: { Segment } = {}
+	local kinds = config.segmentKinds or KINDS
+	for index = 1, config.stageCount do
+		local kind = kinds[random:NextInteger(1, #kinds)]
+		local segment: Segment
+		if kind == "gap" or kind == "offset" then
+			current, segment = addJump(random, index, kind, current, config, parts)
+		elseif kind == "beam" then
+			current, segment = addBeam(random, index, current, config, parts)
+		else
+			current, segment = addStairs(random, index, current, config, parts)
+		end
+		table.insert(segments, segment)
+	end
+	return {
+		seed = requestedSeed,
+		generationSeed = generationSeed,
+		generationAttempt = 0,
+		rejections = {},
+		generatorVersion = VERSION,
+		parts = parts,
+		segments = segments,
+		spawnCFrame = CFrame.lookAt(start + Vector3.new(0, 3, 3), start + Vector3.new(0, 3, -1)),
+		finishPosition = current,
+		courseStart = start,
+		courseEnd = current,
+		signature = signature(requestedSeed, generationSeed, segments, parts),
+	}
+end
+
+local function overlaps(a: PartSpec, b: PartSpec): boolean
+	local delta = a.position - b.position
+	local half = (a.size + b.size) / 2
+	local epsilon = 0.01
+	return math.abs(delta.X) < half.X - epsilon
+		and math.abs(delta.Y) < half.Y - epsilon
+		and math.abs(delta.Z) < half.Z - epsilon
+end
+
+function Generator.validate(manifest: Manifest, config: any): (boolean, string?)
+	if #manifest.segments ~= config.stageCount then
+		return false, "stage count mismatch"
+	end
+	for _, segment in manifest.segments do
+		if segment.kind == "gap" or segment.kind == "offset" then
+			if segment.parameters.gap > config.maxJumpGap then
+				return false, "jump gap exceeds limit"
+			end
+			if math.abs(segment.parameters.offset) > config.maxLateralOffset then
+				return false, "lateral offset exceeds limit"
+			end
+		end
+	end
+	for first = 1, #manifest.parts do
+		for second = first + 1, #manifest.parts do
+			local a = manifest.parts[first]
+			local b = manifest.parts[second]
+			if a.stage ~= b.stage and overlaps(a, b) then
+				return false, string.format("parts overlap: %s and %s", a.name, b.name)
+			end
+		end
+	end
+	return true, nil
+end
+
+function Generator.oracle(manifest: Manifest, config: any): (boolean, string?)
+	local plan, reason = ScriptedCourseOracle.plan(manifest, config)
+	return plan ~= nil, reason
+end
+
+function Generator.manifest(seed: number, config: any): Manifest
+	local rejections: { string } = {}
+	for attempt = 0, config.maxGenerationAttempts - 1 do
+		local generationSeed = (seed + attempt * 104729) % 2147483647
+		local manifest = candidate(seed, generationSeed, config)
+		manifest.generationAttempt = attempt
+		manifest.rejections = table.clone(rejections)
+		local valid, reason = Generator.validate(manifest, config)
+		if valid then
+			valid, reason = Generator.oracle(manifest, config)
+		end
+		if valid then
+			return manifest
+		end
+		table.insert(
+			rejections,
+			string.format(
+				"attempt=%d generation_seed=%d reason=%s",
+				attempt,
+				generationSeed,
+				reason or "unknown"
+			)
+		)
+	end
+	error(
+		string.format(
+			"seed %d exhausted %d attempts: %s",
+			seed,
+			config.maxGenerationAttempts,
+			table.concat(rejections, "; ")
+		)
+	)
+end
+
+local COLORS = {
+	platform = Color3.fromRGB(72, 145, 210),
+	beam = Color3.fromRGB(235, 170, 65),
+	stair = Color3.fromRGB(150, 105, 200),
+}
+
+local function markerPart(name: string, size: Vector3, position: Vector3, color: Color3): Part
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Anchored = true
+	part.CanCollide = false
+	part.Size = size
+	part.Position = position
+	part.Color = color
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	return part
+end
+
+local function translateManifest(manifest: Manifest, offset: Vector3): Manifest
+	if offset.Magnitude == 0 then
+		return manifest
+	end
+	for _, spec in manifest.parts do
+		spec.position += offset
+	end
+	for _, segment in manifest.segments do
+		segment.entryPosition += offset
+		segment.exitPosition += offset
+		segment.checkpointPosition += offset
+	end
+	manifest.spawnCFrame += offset
+	manifest.finishPosition += offset
+	manifest.courseStart += offset
+	manifest.courseEnd += offset
+	return manifest
+end
+
+function Generator.build(seed: number, config: any, parent: Instance, origin: Vector3?): Manifest
+	local manifest = Generator.manifest(seed, config)
+	local valid, reason = Generator.validate(manifest, config)
+	assert(valid, reason)
+	translateManifest(manifest, origin or Vector3.zero)
+	local old = parent:FindFirstChild("GeneratedCourseV2")
+	if old then
+		old:Destroy()
+	end
+	local model = Instance.new("Model")
+	model.Name = "GeneratedCourseV2"
+	model:SetAttribute("CourseSeed", seed)
+	model:SetAttribute("GenerationSeed", manifest.generationSeed)
+	model:SetAttribute("GenerationAttempt", manifest.generationAttempt)
+	model:SetAttribute("RejectedCandidates", #manifest.rejections)
+	model:SetAttribute("GeneratorVersion", VERSION)
+	model:SetAttribute("Signature", manifest.signature)
+	for _, spec in manifest.parts do
+		local part = Instance.new("Part")
+		part.Name = spec.name
+		part.Anchored = true
+		part.Size = spec.size
+		part.Position = spec.position - Vector3.new(0, spec.size.Y / 2, 0)
+		part.Color = COLORS[spec.kind] or COLORS.platform
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part:SetAttribute("SegmentKind", spec.kind)
+		part:SetAttribute("Stage", spec.stage)
+		part.Parent = model
+	end
+	for _, segment in manifest.segments do
+		local checkpoint = markerPart(
+			string.format("Checkpoint_%02d", segment.index),
+			Vector3.new(config.platformWidth - 2, 0.2, 2),
+			segment.checkpointPosition + Vector3.new(0, 0.1, 0),
+			Color3.fromRGB(80, 220, 125)
+		)
+		checkpoint.Transparency = 0.35
+		checkpoint:SetAttribute("CheckpointIndex", segment.index)
+		checkpoint.Parent = model
+	end
+	local finish = markerPart(
+		"Finish",
+		Vector3.new(config.platformWidth, 0.25, 3),
+		manifest.finishPosition + Vector3.new(0, 0.125, 0),
+		Color3.fromRGB(245, 210, 60)
+	)
+	finish:SetAttribute("Finish", true)
+	finish.Parent = model
+	local killPlane = markerPart(
+		"KillPlane",
+		Vector3.new(300, 1, 500),
+		Vector3.new(
+			manifest.courseStart.X,
+			config.killPlaneY,
+			(manifest.courseStart.Z + manifest.courseEnd.Z) / 2
+		),
+		Color3.fromRGB(190, 45, 45)
+	)
+	killPlane.Transparency = 0.35
+	killPlane:SetAttribute("Hazard", true)
+	killPlane.Parent = model
+	model.Parent = parent
+	return manifest
+end
+
+return Generator
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="11">
+        <Properties>
+          <string name="Name">ProtocolTypes</string>
+          <string name="Source"><![CDATA[--!strict
+
+export type Action = {
+	strafe: number,
+	forward: number,
+	yaw: number,
+	jump: boolean,
+}
+
+export type Observation = {
+	schema: "obby-structured-v1",
+	values: { number },
+}
+
+export type ResetRequest = {
+	protocol_version: "0.1.0",
+	message_type: "reset_request",
+	request_id: string,
+	episode_id: string,
+	course_seed: number,
+	generator_version: "0.5.0",
+}
+
+export type ActionRequest = {
+	protocol_version: "0.1.0",
+	message_type: "action_request",
+	request_id: string,
+	episode_id: string,
+	step_id: number,
+	action: Action,
+}
+
+export type StepResult = {
+	protocol_version: "0.1.0",
+	message_type: "step_result",
+	request_id: string,
+	episode_id: string,
+	step_id: number,
+	course_seed: number,
+	observation: Observation,
+	reward: number,
+	reward_components: { [string]: number },
+	terminated: boolean,
+	truncated: boolean,
+}
+
+return table.freeze({})
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="12">
+        <Properties>
+          <string name="Name">ResetController</string>
+          <string name="Source"><![CDATA[--!strict
+
+local AgentHarness = require(script.Parent.AgentHarness)
+
+local ResetController = {}
+
+export type Controller = {
+	state: AgentHarness.State,
+	fallY: number,
+	resetCount: number,
+	lastResetAt: number,
+}
+
+function ResetController.new(state: AgentHarness.State, fallY: number): Controller
+	return { state = state, fallY = fallY, resetCount = 0, lastResetAt = -math.huge }
+end
+
+function ResetController.reset(controller: Controller, reason: string): boolean
+	local now = os.clock()
+	if now - controller.lastResetAt < 0.25 then
+		return false
+	end
+	controller.lastResetAt = now
+	controller.resetCount += 1
+	AgentHarness.reset(controller.state)
+	controller.state.character:SetAttribute("LastResetReason", reason)
+	controller.state.character:SetAttribute("ResetCount", controller.resetCount)
+	return true
+end
+
+function ResetController.step(controller: Controller): boolean
+	if controller.state.root.Position.Y < controller.fallY then
+		return ResetController.reset(controller, "fall")
+	end
+	return false
+end
+
+return ResetController
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="13">
+        <Properties>
+          <string name="Name">ScriptedCourseOracle</string>
+          <string name="Source"><![CDATA[--!strict
+
+export type Primitive = { stage: number, kind: string, target: Vector3, jump: boolean }
+
+local Oracle = {}
+
+function Oracle.plan(manifest: any, config: any): ({ Primitive }?, string?)
+	local primitives: { Primitive } = {}
+	local expectedEntry = manifest.courseStart
+	for _, segment in manifest.segments do
+		if (segment.entryPosition - expectedEntry).Magnitude > 0.01 then
+			return nil, string.format("checkpoint chain breaks before stage %d", segment.index)
+		end
+		if (segment.checkpointPosition - segment.exitPosition).Magnitude > 0.01 then
+			return nil, string.format("checkpoint is not on stage %d exit", segment.index)
+		end
+		if segment.kind == "gap" or segment.kind == "offset" then
+			if math.abs(segment.parameters.height) > 3 then
+				return nil, string.format("jump at stage %d exceeds oracle height", segment.index)
+			end
+			local airDistance =
+				Vector2.new(segment.parameters.offset, segment.parameters.gap).Magnitude
+			if airDistance > config.maxOracleJumpDistance then
+				return nil, string.format("jump at stage %d exceeds oracle distance", segment.index)
+			end
+			table.insert(primitives, {
+				stage = segment.index,
+				kind = "jump_land",
+				target = segment.exitPosition,
+				jump = true,
+			})
+		elseif segment.kind == "beam" then
+			if segment.parameters.width < config.minOracleBeamWidth then
+				return nil, string.format("beam at stage %d is below oracle width", segment.index)
+			end
+			table.insert(primitives, {
+				stage = segment.index,
+				kind = "beam_traverse",
+				target = segment.exitPosition,
+				jump = false,
+			})
+		elseif segment.kind == "stairs" then
+			if segment.parameters.rise > 2 or segment.parameters.run < 2 then
+				return nil,
+					string.format("stairs at stage %d exceed controller limits", segment.index)
+			end
+			for stair = 1, segment.parameters.count do
+				table.insert(primitives, {
+					stage = segment.index,
+					kind = "stair_step",
+					target = segment.entryPosition + Vector3.new(
+						0,
+						stair * segment.parameters.rise,
+						-stair * segment.parameters.run
+					),
+					jump = true,
+				})
+			end
+			table.insert(primitives, {
+				stage = segment.index,
+				kind = "stair_land",
+				target = segment.exitPosition,
+				jump = false,
+			})
+		else
+			return nil, string.format("unknown segment kind at stage %d", segment.index)
+		end
+		expectedEntry = segment.exitPosition
+	end
+	if (manifest.courseEnd - expectedEntry).Magnitude > 0.01 then
+		return nil, "course end does not match checkpoint chain"
+	end
+	if manifest.courseEnd.Y - manifest.courseStart.Y > config.maxCourseRise then
+		return nil, "total course rise exceeds oracle limit"
+	end
+	return primitives, nil
+end
+
+return Oracle
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="14">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Script" referent="15">
+      <Properties>
+        <string name="Name">Main</string>
+        <token name="RunContext">0</token>
+        <string name="Source"><![CDATA[--!strict
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local AgentHarness = require(ReplicatedStorage.ObbyRL.AgentHarness)
+local Config = require(ReplicatedStorage.ObbyRL.Config)
+local CourseGenerator = require(ReplicatedStorage.ObbyRL.ProceduralCourseGenerator)
+local CourseConfig = require(ReplicatedStorage.ObbyRL.ProceduralCourseConfig)
+local ResetController = require(ReplicatedStorage.ObbyRL.ResetController)
+
+local controlStatus = ReplicatedStorage.ObbyRL:FindFirstChild("ControlStatus")
+if not controlStatus then
+	controlStatus = Instance.new("RemoteEvent")
+	controlStatus.Name = "ControlStatus"
+	controlStatus.Parent = ReplicatedStorage.ObbyRL
+end
+local controlStatusEvent = controlStatus :: RemoteEvent
+controlStatusEvent.OnServerEvent:Connect(function(player: Player, disabled: boolean)
+	player:SetAttribute("ObbyRLDefaultControlsDisabled", disabled == true)
+end)
+
+workspace.Gravity = Config.WORKSPACE_GRAVITY
+local manifest = CourseGenerator.build(0, CourseConfig, workspace)
+local course = workspace:WaitForChild("GeneratedCourseV2")
+local controllersByCharacter: { [Model]: ResetController.Controller } = {}
+
+local function connectKillPlane(model: Model)
+	local currentKillPlane = model:WaitForChild("KillPlane") :: BasePart
+	currentKillPlane.Touched:Connect(function(hit: BasePart)
+		local character = hit:FindFirstAncestorOfClass("Model")
+		if character then
+			local controller = controllersByCharacter[character]
+			if controller then
+				AgentHarness.recover(controller.state)
+				character:SetAttribute("LastResetReason", "hazard")
+			end
+		end
+	end)
+end
+
+connectKillPlane(course)
+
+for index = 1, CourseConfig.stageCount do
+	local checkpoint = course:WaitForChild(string.format("Checkpoint_%02d", index)) :: BasePart
+	checkpoint.Touched:Connect(function(hit: BasePart)
+		local character = hit:FindFirstAncestorOfClass("Model")
+		local controller = if character then controllersByCharacter[character] else nil
+		if controller then
+			AgentHarness.advanceCheckpoint(controller.state)
+		end
+	end)
+end
+
+local function onCharacter(character: Model)
+	local state = AgentHarness.new(character, manifest)
+	AgentHarness.reset(state)
+	-- The plugin observes the configured kill-plane crossing to assign the RL penalty.
+	-- Keep this heartbeat reset only as a deep-fall safety net so it cannot win that race.
+	controllersByCharacter[character] = ResetController.new(state, CourseConfig.killPlaneY - 25)
+	character.Destroying:Once(function()
+		controllersByCharacter[character] = nil
+	end)
+	character:SetAttribute("ObbyRLReady", true)
+	character:SetAttribute("ObservationSize", #AgentHarness.observe(state))
+end
+
+RunService.Heartbeat:Connect(function()
+	for character, controller in controllersByCharacter do
+		if character.Parent then
+			ResetController.step(controller)
+		end
+	end
+end)
+
+local function onPlayer(player: Player)
+	player.CharacterAdded:Connect(onCharacter)
+	if player.Character then
+		task.spawn(onCharacter, player.Character)
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayer)
+for _, player in Players:GetPlayers() do
+	onPlayer(player)
+end
+
+print(
+	string.format(
+		"[ObbyRL] M0 ready (config=%s protocol=%s generator=%s)",
+		Config.CONFIG_VERSION,
+		Config.PROTOCOL_VERSION,
+		Config.GENERATOR_VERSION
+	)
+)
+]]></string>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="StarterPlayer" referent="16">
+    <Properties>
+      <string name="Name">StarterPlayer</string>
+    </Properties>
+    <Item class="StarterPlayerScripts" referent="17">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+      <Item class="LocalScript" referent="18">
+        <Properties>
+          <string name="Name">DisableControls</string>
+          <string name="Source"><![CDATA[--!strict
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local playerScripts = player:WaitForChild("PlayerScripts")
+local playerModule = require(playerScripts:WaitForChild("PlayerModule"))
+local controls = playerModule:GetControls()
+local controlStatus =
+	ReplicatedStorage:WaitForChild("ObbyRL"):WaitForChild("ControlStatus") :: RemoteEvent
+
+local function disableDefaultControls()
+	controls:Disable()
+	controlStatus:FireServer(true)
+end
+
+disableDefaultControls()
+player.CharacterAdded:Connect(function()
+	task.defer(disableDefaultControls)
+end)
+
+local function currentCamera(): Camera
+	local camera = Workspace.CurrentCamera
+	while not camera do
+		Workspace:GetPropertyChangedSignal("CurrentCamera"):Wait()
+		camera = Workspace.CurrentCamera
+	end
+	return camera
+end
+
+task.spawn(function()
+	while true do
+		local lanes = Workspace:FindFirstChild("ObbyRLVectorLanes")
+		if lanes then
+			local camera = currentCamera()
+			camera.CameraType = Enum.CameraType.Scriptable
+			camera.FieldOfView = 55
+			if Workspace:GetAttribute("ObbyRLRecordingCamera") == "completion" then
+				-- Single-agent overview for the promoted two-segment mixed course.
+				camera.FieldOfView = 45
+				camera.CFrame = CFrame.lookAt(Vector3.new(0, 45, 50), Vector3.new(0, 5, -25))
+			elseif Workspace:GetAttribute("ObbyRLRecordingCamera") == "completion-side" then
+				-- Orthogonal side replay of the same deterministic completion seed.
+				camera.FieldOfView = 45
+				camera.CFrame = CFrame.lookAt(Vector3.new(-55, 30, -25), Vector3.new(0, 5, -25))
+			elseif Workspace:GetAttribute("ObbyRLRecordingLaneCount") == 2 then
+				if Workspace:GetAttribute("ObbyRLRecordingCamera") == "behind" then
+					-- Centered elevated chase view: directly behind in plan, tilted down
+					-- to show takeoff timing, gap geometry, and landing outcomes.
+					camera.FieldOfView = 40
+					camera.CFrame = CFrame.lookAt(Vector3.new(22, 75, 95), Vector3.new(22, 4, -8))
+				else
+					-- Orthogonal side profile: plan-view direction is exactly along X.
+					camera.CFrame = CFrame.lookAt(Vector3.new(-70, 14, 15), Vector3.new(0, 5, 15))
+				end
+			elseif Workspace:GetAttribute("ObbyRLRecordingLaneCount") == 4 then
+				camera.CFrame = CFrame.lookAt(Vector3.new(30, 90, 125), Vector3.new(30, 4, 25))
+			else
+				camera.CFrame = CFrame.lookAt(Vector3.new(150, 300, 400), Vector3.new(150, 4, 50))
+			end
+			player:SetAttribute("ObbyRLRecordingCameraActive", true)
+		else
+			player:SetAttribute("ObbyRLRecordingCameraActive", false)
+		end
+		task.wait(0.25)
+	end
+end)
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="Workspace" referent="19">
+    <Properties>
+      <string name="Name">Workspace</string>
+      <float name="Gravity">196.2</float>
+      <bool name="NeedsPivotMigration">false</bool>
+      <bool name="StreamingEnabled">false</bool>
+    </Properties>
+  </Item>
+</roblox>

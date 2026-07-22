@@ -51,8 +51,15 @@ def fit_jump_head(
     seed: int = 0,
     train_actor_representation: bool = False,
     positive_loss_weight: float = 1.0,
+    movement_anchor_weight: float = 0.0,
 ) -> list[float]:
-    if epochs < 1 or batch_size < 1 or learning_rate <= 0 or positive_loss_weight <= 0:
+    if (
+        epochs < 1
+        or batch_size < 1
+        or learning_rate <= 0
+        or positive_loss_weight <= 0
+        or movement_anchor_weight < 0
+    ):
         raise ValueError("invalid jump-head training hyperparameters")
     checked_observations = np.asarray(observations, dtype=np.float32)
     checked_labels = np.asarray(labels, dtype=np.float32)
@@ -60,6 +67,10 @@ def fit_jump_head(
     if checked_observations.shape != (len(checked_labels), expected_width):
         raise ValueError("DAgger observation/label shapes do not match")
     policy = model.policy
+    movement_anchors: np.ndarray | None = None
+    if train_actor_representation and movement_anchor_weight > 0:
+        movement_anchors, _ = model.predict(checked_observations, deterministic=True)
+        movement_anchors = np.asarray(movement_anchors, dtype=np.float32)[:, :3]
     for parameter in policy.parameters():
         parameter.requires_grad_(False)
     for parameter in policy.action_net.parameters():
@@ -96,6 +107,13 @@ def fit_jump_head(
                 torch.ones_like(label_tensor),
             )
             loss = torch.mean(torch.square(predicted_jump - label_tensor) * sample_weights)
+            if movement_anchors is not None:
+                anchor_tensor = torch.as_tensor(
+                    movement_anchors[indices], dtype=torch.float32, device=device
+                )
+                loss += movement_anchor_weight * torch.mean(
+                    torch.square(base_distribution.mean[:, :3] - anchor_tensor)
+                )
             optimizer.zero_grad()
             loss.backward()  # type: ignore[no-untyped-call]
             optimizer.step()

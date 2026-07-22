@@ -25,6 +25,7 @@ def collect_iteration(
     learn_movement: bool = False,
     course_seed_start: int = 0,
     steer_to_checkpoint: bool = False,
+    minimum_checkpoint_index: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     rng = np.random.default_rng(seed)
     next_course_seed = course_seed_start + batch.num_envs
@@ -37,6 +38,7 @@ def collect_iteration(
     clean = 0
     hazards = 0
     active = np.ones(batch.num_envs, dtype=np.bool_)
+    checkpoint_indices = np.zeros(batch.num_envs, dtype=np.int32)
     while finished < episodes:
         labels = oracle.labels(observations)
         policy_actions, _ = model.predict(observations, deterministic=True)
@@ -52,10 +54,14 @@ def collect_iteration(
         else:
             actions[:, 3] = np.where(execute_oracle, labels, actions[:, 3])
         actions[~active] = 0
-        collected_observations.append(observations[active].copy())
+        collect_mask = active & (checkpoint_indices >= minimum_checkpoint_index)
+        collected_observations.append(observations[collect_mask].copy())
         active_labels = oracle_actions if learn_movement else labels
-        collected_labels.append(active_labels[active].copy())
+        collected_labels.append(active_labels[collect_mask].copy())
         next_observations, _, terminated, truncated, infos = batch.step(actions)
+        checkpoint_indices = np.asarray(
+            [int(info.get("checkpoint_index", 0)) for info in infos], dtype=np.int32
+        )
         dones = (terminated | truncated) & active
         for index in np.flatnonzero(dones):
             if finished >= episodes:
@@ -71,6 +77,7 @@ def collect_iteration(
             )
             next_course_seed += batch.num_envs
             active.fill(True)
+            checkpoint_indices.fill(0)
         else:
             observations = next_observations
     return (
@@ -90,7 +97,7 @@ def main() -> None:
     parser.add_argument("--run-name", default="m3-stage2-dagger")
     parser.add_argument("--iterations", type=int, default=4)
     parser.add_argument("--episodes", type=int, default=32)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(2, 23), default=2)
+    parser.add_argument("--curriculum-stage", type=int, choices=range(2, 24), default=2)
     parser.add_argument("--course-seed-start", type=int, default=0)
     parser.add_argument("--oracle-min-distance", type=float, default=13.5)
     parser.add_argument("--oracle-max-distance", type=float, default=17.5)
@@ -99,11 +106,24 @@ def main() -> None:
         action="store_true",
         help="DAgger all four action outputs and execute policy movement in Roblox",
     )
+    parser.add_argument(
+        "--policy-movement",
+        action="store_true",
+        help="Execute learned movement while fitting only the jump output",
+    )
     parser.add_argument("--clone-epochs", type=int, default=40)
     parser.add_argument("--clone-learning-rate", type=float, default=1e-3)
     parser.add_argument("--jump-loss-weight", type=float, default=4.0)
+    parser.add_argument("--positive-jump-loss-weight", type=float, default=1.0)
+    parser.add_argument("--train-actor-representation", action="store_true")
+    parser.add_argument("--movement-anchor-weight", type=float, default=0.0)
     parser.add_argument("--behavior-anchor-weight", type=float, default=0.0)
     parser.add_argument("--steer-to-checkpoint", action="store_true")
+    parser.add_argument("--beta-start", type=float, default=1.0)
+    parser.add_argument("--beta-end", type=float, default=0.0)
+    parser.add_argument("--jump-threshold", type=float, default=0.0)
+    parser.add_argument("--mask-jump-to-takeoff-window", action="store_true")
+    parser.add_argument("--minimum-checkpoint-index", type=int, default=0)
     args = parser.parse_args()
     run_dir = ROOT / "runs" / args.run_name
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -116,16 +136,19 @@ def main() -> None:
     batch = RobloxObbyBatch(
         transport,
         8,
-        jump_threshold=0.0,
+        jump_threshold=args.jump_threshold,
         jump_cooldown_steps=8,
         yaw_scale=0,
         terminate_on_hazard=True,
-        scripted_forward=not args.learn_movement,
+        scripted_forward=not (args.learn_movement or args.policy_movement),
+        mask_jump_to_takeoff_window=args.mask_jump_to_takeoff_window,
     )
     all_observations: list[np.ndarray] = []
     all_labels: list[np.ndarray] = []
     history: list[dict[str, Any]] = []
-    betas = np.linspace(1.0, 0.0, args.iterations)
+    if not (0.0 <= args.beta_start <= 1.0 and 0.0 <= args.beta_end <= 1.0):
+        raise ValueError("DAgger beta values must be in [0, 1]")
+    betas = np.linspace(args.beta_start, args.beta_end, args.iterations)
     try:
         for iteration, beta in enumerate(betas):
             observations, labels, metrics = collect_iteration(
@@ -138,6 +161,7 @@ def main() -> None:
                 learn_movement=args.learn_movement,
                 course_seed_start=args.course_seed_start + iteration * args.episodes,
                 steer_to_checkpoint=args.steer_to_checkpoint,
+                minimum_checkpoint_index=args.minimum_checkpoint_index,
             )
             all_observations.append(observations)
             all_labels.append(labels)
@@ -168,6 +192,9 @@ def main() -> None:
                     epochs=args.clone_epochs,
                     learning_rate=args.clone_learning_rate,
                     seed=20260717 + iteration,
+                    train_actor_representation=args.train_actor_representation,
+                    positive_loss_weight=args.positive_jump_loss_weight,
+                    movement_anchor_weight=args.movement_anchor_weight,
                 )
             model.save(run_dir / f"dagger_{iteration + 1}")
             np.savez_compressed(
@@ -194,8 +221,12 @@ def main() -> None:
                 "learn_movement": args.learn_movement,
                 "curriculum_stage": args.curriculum_stage,
                 "jump_loss_weight": args.jump_loss_weight,
+                "positive_jump_loss_weight": args.positive_jump_loss_weight,
+                "train_actor_representation": args.train_actor_representation,
+                "movement_anchor_weight": args.movement_anchor_weight,
                 "steer_to_checkpoint": args.steer_to_checkpoint,
                 "behavior_anchor_weight": args.behavior_anchor_weight,
+                "minimum_checkpoint_index": args.minimum_checkpoint_index,
                 "initial_loss": losses[0],
                 "final_loss": losses[-1],
             }

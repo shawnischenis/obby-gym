@@ -98,16 +98,37 @@ class StudioHTTPTransport:
         timeout: float = 5.0,
         curriculum_stage: int = 4,
         action_repeat_ticks: int = 3,
+        recording_view: bool = False,
+        recording_camera: str = "auto",
+        recording_visible_lane: int = 0,
     ) -> None:
         if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
             raise ValueError("M1 transport must bind to a local interface")
         self.timeout = timeout
-        if curriculum_stage not in set(range(1, 23)):
-            raise ValueError("curriculum_stage must be 1..22")
+        if curriculum_stage not in set(range(1, 25)):
+            raise ValueError("curriculum_stage must be 1..24")
         self.curriculum_stage = curriculum_stage
         if action_repeat_ticks not in range(1, 7):
             raise ValueError("action_repeat_ticks must be 1..6")
         self.action_repeat_ticks = int(action_repeat_ticks)
+        self.recording_view = bool(recording_view)
+        if recording_camera not in {
+            "auto",
+            "parallel",
+            "side",
+            "behind",
+            "completion",
+            "completion-side",
+            "completion-follow",
+        }:
+            raise ValueError(
+                "recording_camera must be auto, parallel, side, behind, completion, "
+                "completion-side, or completion-follow"
+            )
+        self.recording_camera = recording_camera
+        if recording_visible_lane < 0:
+            raise ValueError("recording_visible_lane must be non-negative")
+        self.recording_visible_lane = int(recording_visible_lane)
         self.broker = _Broker()
         self.server = _BrokerServer((host, port), self.broker)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -141,9 +162,12 @@ class StudioHTTPTransport:
         return self._request(
             "reset_command",
             course_seed=int(seed),
-            generator_version="0.5.0",
+            generator_version="0.7.0",
             curriculum_stage=self.curriculum_stage,
             action_repeat_ticks=self.action_repeat_ticks,
+            recording_view=self.recording_view,
+            recording_camera=self.recording_camera,
+            recording_visible_lane=self.recording_visible_lane,
         )
 
     def step(self, action: Mapping[str, float | bool]) -> Mapping[str, Any]:
@@ -151,17 +175,26 @@ class StudioHTTPTransport:
         self.step_id += 1
         return response
 
-    def vector_reset(self, *, seeds: list[int]) -> list[Mapping[str, Any]]:
+    def vector_reset(
+        self, *, seeds: list[int], post_landing_mask: Sequence[bool] | None = None
+    ) -> list[Mapping[str, Any]]:
         if not seeds:
             raise ValueError("vector reset requires at least one seed")
+        landing_mask = [False] * len(seeds) if post_landing_mask is None else list(post_landing_mask)
+        if len(landing_mask) != len(seeds):
+            raise ValueError("post-landing mask must match vector seed count")
         self.episode_id = str(uuid.uuid4())
         self.step_id = 0
         response = self._request(
             "vector_reset_command",
             course_seeds=[int(seed) for seed in seeds],
-            generator_version="0.5.0",
+            post_landing_mask=[bool(value) for value in landing_mask],
+            generator_version="0.7.0",
             curriculum_stage=self.curriculum_stage,
             action_repeat_ticks=self.action_repeat_ticks,
+            recording_view=self.recording_view,
+            recording_camera=self.recording_camera,
+            recording_visible_lane=self.recording_visible_lane,
         )
         results = response.get("results")
         if not isinstance(results, list) or len(results) != len(seeds):
@@ -183,15 +216,23 @@ class StudioHTTPTransport:
         return results
 
     def vector_reset_lanes(
-        self, *, seeds: Sequence[int], reset_mask: Sequence[bool]
+        self,
+        *,
+        seeds: Sequence[int],
+        reset_mask: Sequence[bool],
+        post_landing_mask: Sequence[bool] | None = None,
     ) -> list[Mapping[str, Any]]:
         if len(seeds) != len(reset_mask) or not seeds:
             raise ValueError("vector lane seeds and reset mask must have equal non-zero length")
+        landing_mask = [False] * len(seeds) if post_landing_mask is None else list(post_landing_mask)
+        if len(landing_mask) != len(seeds):
+            raise ValueError("post-landing mask must match vector lane seed count")
         response = self._request(
             "vector_reset_lanes_command",
             step_id=self.step_id,
             course_seeds=[int(seed) for seed in seeds],
             reset_mask=[bool(value) for value in reset_mask],
+            post_landing_mask=[bool(value) for value in landing_mask],
         )
         results = response.get("results")
         if not isinstance(results, list) or len(results) != len(seeds):

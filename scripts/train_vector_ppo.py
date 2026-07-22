@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--timesteps", type=int)
     parser.add_argument("--n-steps", type=int)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 23))
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 24))
     parser.add_argument("--action-repeat-ticks", type=int, choices=range(1, 7), default=3)
     parser.add_argument("--init-model", type=Path)
     parser.add_argument("--smoothness-weight", type=float, default=0.0)
@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reset-all-on-any-done", action="store_true")
     parser.add_argument("--wait-for-all-done", action="store_true")
     parser.add_argument(
+        "--post-landing-reset-probability",
+        type=float,
+        default=0.0,
+        help="fraction of Stage 20-23 lanes reset from captured intermediate states",
+    )
+    parser.add_argument(
         "--privileged-observations",
         action="store_true",
         help="train a fresh teacher on the separate exact geometry/physics payload",
@@ -82,7 +88,7 @@ def parse_curriculum_replay(specification: str | None) -> list[tuple[int, float]
             raise ValueError("curriculum replay entries must use stage:weight")
         stage = int(stage_text)
         weight = float(weight_text)
-        if stage not in range(1, 23) or weight <= 0:
+        if stage not in range(1, 24) or weight <= 0:
             raise ValueError("curriculum replay stage or weight is invalid")
         replay.append((stage, weight))
     return replay
@@ -126,6 +132,7 @@ def main() -> None:
         "vary_course_seeds": bool(args.vary_course_seeds),
         "reset_all_on_any_done": bool(args.reset_all_on_any_done),
         "wait_for_all_done": bool(args.wait_for_all_done),
+        "post_landing_reset_probability": float(args.post_landing_reset_probability),
         "curriculum_replay": curriculum_replay,
         "privileged_observations": bool(args.privileged_observations),
         "jump_feasibility_model": (
@@ -215,6 +222,7 @@ def main() -> None:
             curriculum_replay=curriculum_replay,
             curriculum_sampler_seed=int(config["master_seed"]),
             scripted_forward_replay_probability=float(args.scripted_forward_replay_probability),
+            post_landing_reset_probability=float(args.post_landing_reset_probability),
         )
         env = VecMonitor(vector_env, filename=str(run_dir / "monitor.csv"))
         checkpoint = CheckpointCallback(

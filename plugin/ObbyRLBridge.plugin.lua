@@ -17,6 +17,45 @@ local RESET_STABLE_TICKS = 3
 local VECTOR_LANE_SPACING = 400
 local MAX_ACTION_HOLD_SECONDS = 0.25
 
+local function vectorLaneOrigin(
+	index: number,
+	laneCount: number,
+	recordingView: boolean,
+	recordingCamera: string
+): Vector3
+	if recordingView then
+		if laneCount == 2 and recordingCamera == "side" then
+			-- Separate the courses along their travel axis so an orthogonal side
+			-- camera sees two distinct jump profiles instead of overlapping lanes.
+			return Vector3.new(0, 0, (index - 1) * 55)
+		end
+		local columns = if laneCount <= 4 then 2 else 4
+		local xSpacing = if laneCount == 2 then 44 elseif laneCount <= 4 then 60 else 100
+		local zSpacing = if laneCount <= 4 then 80 else 140
+		local column = (index - 1) % columns
+		local row = math.floor((index - 1) / columns)
+		return Vector3.new(column * xSpacing, 0, row * zSpacing)
+	end
+	return Vector3.new((index - 1) * VECTOR_LANE_SPACING, 0, 0)
+end
+
+local function hideRecordingGeometry(root: Instance)
+	for _, descendant in root:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Transparency = 1
+			descendant.CanCollide = false
+		end
+	end
+end
+
+local function hideRecordingVisuals(root: Instance)
+	for _, descendant in root:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Transparency = 1
+		end
+	end
+end
+
 local function settleCharacter(AgentHarness: any, state: any): number
 	local started = os.clock()
 	local stableTicks = 0
@@ -30,6 +69,7 @@ local function settleCharacter(AgentHarness: any, state: any): number
 	AgentHarness.stop(state)
 	state.root.AssemblyLinearVelocity = Vector3.zero
 	state.root.AssemblyAngularVelocity = Vector3.zero
+	AgentHarness.neutralizePose(state)
 	return os.clock() - started
 end
 
@@ -56,6 +96,7 @@ local function settleCharacters(AgentHarness: any, states: { any }): number
 		AgentHarness.stop(state)
 		state.root.AssemblyLinearVelocity = Vector3.zero
 		state.root.AssemblyAngularVelocity = Vector3.zero
+		AgentHarness.neutralizePose(state)
 	end
 	return os.clock() - started
 end
@@ -77,6 +118,36 @@ local function exchange(payload: any): (boolean, any)
 		return false, string.format("HTTP %s: %s", result.StatusCode, result.StatusMessage)
 	end
 	return true, HttpService:JSONDecode(result.Body)
+end
+
+local function selectLandingSnapshot(snapshots: any, selectorSeed: number): any?
+	if snapshots == nil then
+		return nil
+	end
+	local available = {}
+	for checkpointIndex, snapshot in snapshots do
+		if snapshot ~= nil then
+			table.insert(available, { checkpointIndex = checkpointIndex, snapshot = snapshot })
+		end
+	end
+	table.sort(available, function(a, b)
+		return a.checkpointIndex < b.checkpointIndex
+	end)
+	if #available == 0 then
+		return nil
+	end
+	local selected = (math.abs(selectorSeed) % #available) + 1
+	return available[selected].snapshot
+end
+
+local function landingSnapshotCount(snapshots: any): number
+	local count = 0
+	for _, snapshot in snapshots or {} do
+		if snapshot ~= nil then
+			count += 1
+		end
+	end
+	return count
 end
 
 local function waitForRuntime(): (any, any, any, any, Model)
@@ -151,8 +222,19 @@ local function cloneAgent(character: Model, parent: Instance, index: number): Mo
 	local clone = character:Clone()
 	clone.Name = string.format("Agent_%02d", index)
 	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("Animation") and string.find(string.lower(descendant.Name), "jump") then
+			clone:SetAttribute("RecordingJumpAnimationId", descendant.AnimationId)
+			break
+		end
+	end
+	for _, descendant in clone:GetDescendants() do
 		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
 			descendant:Destroy()
+		elseif descendant:IsA("Motor6D") then
+			-- The player is a rig template, not the simulated agent. Cloning while
+			-- its Animate script is mid-pose otherwise bakes raised arms or a jump
+			-- pose into later recording episodes after the scripts are removed.
+			descendant.Transform = CFrame.identity
 		end
 	end
 	clone.Parent = parent
@@ -163,8 +245,72 @@ local function cloneAgent(character: Model, parent: Instance, index: number): Mo
 	local humanoid = clone:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		humanoid.PlatformStand = false
+		humanoid.Sit = false
+		humanoid.Jump = false
+		local animator = humanoid:FindFirstChildOfClass("Animator")
+		if animator then
+			for _, track in animator:GetPlayingAnimationTracks() do
+				track:Stop(0)
+			end
+		end
 	end
 	return clone
+end
+
+local function addRecordingEffects(character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root or not root:IsA("BasePart") then
+		return
+	end
+	local upper = Instance.new("Attachment")
+	upper.Position = Vector3.new(0, 1.5, 0)
+	upper.Parent = root
+	local lower = Instance.new("Attachment")
+	lower.Position = Vector3.new(0, -1.5, 0)
+	lower.Parent = root
+	local trail = Instance.new("Trail")
+	trail.Name = "RecordingMotionTrail"
+	trail.Attachment0 = upper
+	trail.Attachment1 = lower
+	trail.Color = ColorSequence.new(Color3.fromRGB(255, 210, 60))
+	trail.Transparency = NumberSequence.new(0.15, 1)
+	trail.Lifetime = 0.45
+	trail.MinLength = 0.1
+	trail.FaceCamera = true
+	trail.Parent = root
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animationId = character:GetAttribute("RecordingJumpAnimationId")
+	if not humanoid or not animationId or animationId == "" then
+		return
+	end
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+	local animation = Instance.new("Animation")
+	animation.Name = "RecordingJumpAnimation"
+	animation.AnimationId = animationId
+	animation.Parent = character
+	local success, jumpTrack = pcall(function()
+		return animator:LoadAnimation(animation)
+	end)
+	if not success or not jumpTrack then
+		warn("[ObbyRL] unable to load recording jump animation")
+		return
+	end
+	jumpTrack.Priority = Enum.AnimationPriority.Action
+	jumpTrack.Looped = false
+	humanoid.StateChanged:Connect(function(_, newState: Enum.HumanoidStateType)
+		if newState == Enum.HumanoidStateType.Jumping then
+			jumpTrack:Play(0.05, 1, 1)
+		elseif newState == Enum.HumanoidStateType.Landed
+			or newState == Enum.HumanoidStateType.Running
+		then
+			jumpTrack:Stop(0.1)
+		end
+	end)
 end
 
 local function vectorLaneResult(
@@ -180,6 +326,22 @@ local function vectorLaneResult(
 	local checkpointReward = (lane.lastCheckpointDistance - checkpointDistance) / 20
 	local progressReward = (progress - lane.lastProgress) * 0.1
 	local reachedCheckpoint = AgentHarness.advanceCheckpoint(lane.state)
+	if reachedCheckpoint then
+		-- advanceCheckpoint changes both the target and its geometry. Return that
+		-- new contract immediately instead of leaking the previous checkpoint for
+		-- one policy decision.
+		observation = AgentHarness.observe(lane.state)
+		progress = observation[13]
+		if lane.state.checkpointIndex < #lane.state.checkpoints then
+			lane.landingSnapshots = lane.landingSnapshots or {}
+			local snapshot = AgentHarness.captureLandingSnapshot(
+				lane.state,
+				action.jump_cooldown_remaining or 0
+			)
+			snapshot.seed = lane.seed
+			lane.landingSnapshots[lane.state.checkpointIndex] = snapshot
+		end
+	end
 	local fell = lane.state.root.Position.Y < -17
 	local terminated = reachedCheckpoint
 		and lane.state.checkpointIndex >= #lane.state.checkpoints
@@ -196,6 +358,9 @@ local function vectorLaneResult(
 		checkpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
 	end
 	if fell and not terminated then
+		if lane.recordingVisible then
+			task.wait(0.5)
+		end
 		heldActions[lane.state] = nil
 		lane.actionStartedAt = nil
 		AgentHarness.stop(lane.state)
@@ -297,6 +462,10 @@ local function runWorker(myGeneration: number)
 			if command.message_type == "vector_reset_command" then
 				local commandStarted = os.clock()
 				clearHeldActions()
+				local previousSnapshots = {}
+				for index, lane in vectorLanes do
+					previousSnapshots[index] = lane.landingSnapshots
+				end
 				local vectorRoot = workspace:FindFirstChild("ObbyRLVectorLanes")
 				if vectorRoot then
 					vectorRoot:Destroy()
@@ -306,18 +475,60 @@ local function runWorker(myGeneration: number)
 				vectorRoot.Parent = workspace
 				vectorLanes = {}
 				curriculumStage = command.curriculum_stage or 4
+				local recordingView = command.recording_view == true
+				local recordingCamera = command.recording_camera or "auto"
+				local recordingVisibleLane = command.recording_visible_lane or 0
+				local postLandingMask = command.post_landing_mask or {}
+				if recordingCamera == "auto" then
+					recordingCamera = if #command.course_seeds == 2 then "side" else "parallel"
+				end
+				workspace:SetAttribute("ObbyRLRecordingView", recordingView)
+				workspace:SetAttribute("ObbyRLRecordingLaneCount", #command.course_seeds)
+				workspace:SetAttribute("ObbyRLRecordingCamera", recordingCamera)
+				-- Lane 1 is generated at the origin, where Main.server also creates the
+				-- standalone base course. Leaving it collidable superimposes unrelated
+				-- platforms under lane 1 and contaminates both training and evaluation.
+				local baseCourse = workspace:FindFirstChild("GeneratedCourseV2")
+				if baseCourse then
+					hideRecordingGeometry(baseCourse)
+				end
 				actionRepeatTicks = math.clamp(command.action_repeat_ticks or 3, 1, 6)
 				local CourseConfig = CurriculumConfig.forStage(curriculumStage)
-				for index, laneSeed in command.course_seeds do
+				for index, requestedSeed in command.course_seeds do
+					local requestedPostLanding = postLandingMask[index] == true
+					local landingSnapshot = if requestedPostLanding
+						then selectLandingSnapshot(previousSnapshots[index], requestedSeed)
+						else nil
+					local laneSeed = if landingSnapshot then landingSnapshot.seed else requestedSeed
 					local laneFolder = Instance.new("Folder")
 					laneFolder.Name = string.format("Lane_%02d", index)
 					laneFolder.Parent = vectorRoot
-					local origin = Vector3.new((index - 1) * VECTOR_LANE_SPACING, 0, 0)
+					local origin = vectorLaneOrigin(
+						index,
+						#command.course_seeds,
+						recordingView,
+						recordingCamera
+					)
 					local manifest =
 						CourseGenerator.build(laneSeed, CourseConfig, laneFolder, origin)
+					if recordingView then
+						local laneCourse = laneFolder:FindFirstChild("GeneratedCourseV2")
+						local killPlane = if laneCourse then laneCourse:FindFirstChild("KillPlane") else nil
+						if killPlane and killPlane:IsA("BasePart") then
+							killPlane.Transparency = 1
+						end
+					end
 					local agent = cloneAgent(character, laneFolder, index)
 					local laneState = AgentHarness.new(agent, manifest)
 					AgentHarness.reset(laneState)
+					local postLanding = landingSnapshot ~= nil
+					local recordingVisible = recordingVisibleLane == index
+					if recordingVisible then
+						addRecordingEffects(agent)
+					end
+					if recordingVisibleLane > 0 and index ~= recordingVisibleLane then
+						hideRecordingVisuals(laneFolder)
+					end
 					table.insert(vectorLanes, {
 						index = index,
 						seed = laneSeed,
@@ -326,6 +537,10 @@ local function runWorker(myGeneration: number)
 						lastCheckpointDistance = (laneState.root.Position - laneState.checkpoint).Magnitude,
 						actionStartedAt = nil,
 						previousActionTotalSeconds = 0,
+						recordingVisible = recordingVisible,
+						postLanding = postLanding,
+						pendingSnapshot = landingSnapshot,
+						landingSnapshots = previousSnapshots[index] or {},
 					})
 				end
 				-- The real player is only a rig template in vector mode. Park it outside
@@ -340,6 +555,11 @@ local function runWorker(myGeneration: number)
 					table.insert(states, lane.state)
 				end
 				settleCharacters(AgentHarness, states)
+				for _, lane in vectorLanes do
+					if lane.pendingSnapshot then
+						AgentHarness.restoreLandingSnapshot(lane.state, lane.pendingSnapshot)
+					end
+				end
 				for _, lane in vectorLanes do
 					lane.lastCheckpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
 				end
@@ -357,7 +577,19 @@ local function runWorker(myGeneration: number)
 						reward = 0,
 						terminated = false,
 						truncated = false,
-						info = { lane_index = lane.index, course_seed = lane.seed },
+						info = {
+							lane_index = lane.index,
+							course_seed = lane.seed,
+							checkpoint_index = lane.state.checkpointIndex,
+							post_landing_reset = lane.postLanding == true,
+							restored_jump_cooldown = if lane.pendingSnapshot
+								then lane.pendingSnapshot.jumpCooldown
+								else 0,
+							replayed_checkpoint_index = if lane.pendingSnapshot
+								then lane.pendingSnapshot.checkpointIndex
+								else 0,
+							available_snapshot_count = landingSnapshotCount(lane.landingSnapshots),
+						},
 					})
 				end
 				outgoing = {
@@ -385,6 +617,7 @@ local function runWorker(myGeneration: number)
 					#command.reset_mask == #vectorLanes,
 					"vector reset mask does not match lanes"
 				)
+				local postLandingMask = command.post_landing_mask or {}
 				local CourseConfig = CurriculumConfig.forStage(curriculumStage)
 				local resetStates = {}
 				for index, shouldReset in command.reset_mask do
@@ -395,13 +628,20 @@ local function runWorker(myGeneration: number)
 						for _, child in parent:GetChildren() do
 							child:Destroy()
 						end
-						local laneSeed = command.course_seeds[index]
+						local requestedPostLanding = postLandingMask[index] == true
+						local landingSnapshot = if requestedPostLanding
+							then selectLandingSnapshot(oldLane.landingSnapshots, command.course_seeds[index])
+							else nil
+						local laneSeed = if landingSnapshot
+							then landingSnapshot.seed
+							else command.course_seeds[index]
 						local origin = Vector3.new((index - 1) * VECTOR_LANE_SPACING, 0, 0)
 						local manifest =
 							CourseGenerator.build(laneSeed, CourseConfig, parent, origin)
 						local agent = cloneAgent(character, parent, index)
 						local laneState = AgentHarness.new(agent, manifest)
 						AgentHarness.reset(laneState)
+						local postLanding = landingSnapshot ~= nil
 						vectorLanes[index] = {
 							index = index,
 							seed = laneSeed,
@@ -410,11 +650,19 @@ local function runWorker(myGeneration: number)
 							lastCheckpointDistance = 0,
 							actionStartedAt = nil,
 							previousActionTotalSeconds = 0,
+							postLanding = postLanding,
+							pendingSnapshot = landingSnapshot,
+							landingSnapshots = oldLane.landingSnapshots or {},
 						}
 						table.insert(resetStates, laneState)
 					end
 				end
 				settleCharacters(AgentHarness, resetStates)
+				for index, lane in vectorLanes do
+					if command.reset_mask[index] and lane.pendingSnapshot then
+						AgentHarness.restoreLandingSnapshot(lane.state, lane.pendingSnapshot)
+					end
+				end
 				local results = {}
 				for _, lane in vectorLanes do
 					lane.lastCheckpointDistance = (lane.state.root.Position - lane.state.checkpoint).Magnitude
@@ -430,7 +678,19 @@ local function runWorker(myGeneration: number)
 						reward = 0,
 						terminated = false,
 						truncated = false,
-						info = { lane_index = lane.index, course_seed = lane.seed },
+						info = {
+							lane_index = lane.index,
+							course_seed = lane.seed,
+							checkpoint_index = lane.state.checkpointIndex,
+							post_landing_reset = lane.postLanding == true,
+							restored_jump_cooldown = if lane.pendingSnapshot
+								then lane.pendingSnapshot.jumpCooldown
+								else 0,
+							replayed_checkpoint_index = if lane.pendingSnapshot
+								then lane.pendingSnapshot.checkpointIndex
+								else 0,
+							available_snapshot_count = landingSnapshotCount(lane.landingSnapshots),
+						},
 					})
 				end
 				outgoing = {
@@ -478,7 +738,13 @@ local function runWorker(myGeneration: number)
 					)
 					table.insert(results, result)
 					if result.info.hazard_recovered then
-						table.insert(recoveredStates, lane.state)
+						if lane.recordingVisible then
+							table.insert(recoveredStates, lane.state)
+						else
+							-- Invisible cadence lanes should never freeze the visible
+							-- recording while waiting for their rigs to settle.
+							AgentHarness.neutralizePose(lane.state)
+						end
 					end
 				end
 				if #recoveredStates > 0 then

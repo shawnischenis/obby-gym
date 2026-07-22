@@ -12,8 +12,12 @@ class FakeVectorTransport:
         self.terminated_index = terminated_index
         self.actions: list[list[dict[str, float | bool]]] = []
         self.checkpoint_index = 0
+        self.post_landing_masks: list[list[bool]] = []
 
-    def vector_reset(self, *, seeds: list[int]) -> list[dict[str, Any]]:
+    def vector_reset(
+        self, *, seeds: list[int], post_landing_mask: list[bool] | None = None
+    ) -> list[dict[str, Any]]:
+        self.post_landing_masks.append(post_landing_mask or [False] * len(seeds))
         return [self._result(index) for index in range(len(seeds))]
 
     def vector_step(self, actions: list[dict[str, float | bool]]) -> list[dict[str, Any]]:
@@ -66,6 +70,19 @@ def test_hazard_can_end_vector_trial() -> None:
     actions = np.zeros((2, 4), dtype=np.float32)
     _, _, terminated, _, _ = batch.step(actions)
     assert terminated.tolist() == [True, True]
+
+
+def test_stage23_can_reset_half_of_lanes_from_post_landing_states() -> None:
+    transport = FakeVectorTransport()
+    transport.curriculum_stage = 23
+    batch = RobloxObbyBatch(transport, 8)  # type: ignore[arg-type]
+    env = RobloxBatchedVecEnv(
+        batch,
+        post_landing_reset_probability=0.5,
+        curriculum_sampler_seed=7,
+    )
+    env.reset()
+    assert sum(transport.post_landing_masks[-1]) == 4
 
 
 def test_checkpoint_advancement_can_receive_extra_training_credit() -> None:
@@ -191,6 +208,7 @@ def test_vector_env_can_wait_at_barrier_until_every_lane_finishes() -> None:
         "forward": 0.0,
         "yaw": 0.0,
         "jump": False,
+        "jump_cooldown_remaining": 7,
     }
     assert infos[0]["TimeLimit.truncated"] is False
     assert infos[1]["TimeLimit.truncated"] is True

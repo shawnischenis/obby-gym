@@ -109,8 +109,8 @@ def test_curriculum_stage_is_sent_with_reset() -> None:
 
 
 def test_invalid_curriculum_stage_is_rejected() -> None:
-    with pytest.raises(ValueError, match="1..22"):
-        StudioHTTPTransport(port=0, curriculum_stage=23)
+    with pytest.raises(ValueError, match="1..24"):
+        StudioHTTPTransport(port=0, curriculum_stage=25)
 
 
 def test_invalid_action_repeat_ticks_is_rejected() -> None:

@@ -246,6 +246,135 @@ successful deterministic episodes taking about 44 decisions. The next diagnostic
 uses four synchronized lanes to reduce cross-lane interruption without returning
 to invalid independent course rebuilding.
 
+### Required-jump correction
+
+Visual review found that Stage 20 overstates jump ability: it inherits the base
+3.5-7 stud gap range, and half of its uniformly sampled segment kinds are beams
+or stairs. Short gap samples can also be crossed using running momentum. The
+mixed completion gate therefore does not measure success conditional on a jump
+actually being required.
+
+Stage 23 is a two-transition required-jump correction. Every segment samples a
+6-8 stud gap, -3 to +3 studs of landing height, and -18 to +18 degrees of
+approach angle. It uses the `offset` generator for both transitions so flat and
+near-zero-angle cases remain possible while beam/stair samples cannot dilute the
+new-task distribution. Training continues from the promoted Stage 20 checkpoint
+with replay weights `23:0.65,11:0.10,7:0.04,8:0.04,3:0.05,18:0.05,19:0.05,20:0.02`.
+Promotion must report Stage 23 separately from Stage 18/19 regressions; mixed
+course completion alone is not evidence of required-jump competence.
+
+The first 8,192-transition continuation exposed and corrected a separate
+evaluation error: `evaluate_stage2_vector.py` had hard-coded a zero jump
+threshold even though training and deployment use `0.75`. Under the corrected
+deployment threshold, the inherited Stage 20 policy completed 8/24 Stage 23
+development courses. The best new checkpoint was the 4,096-transition snapshot
+at 19/24; later snapshots regressed, with the 8,192 snapshot reaching only
+10/24. On a separate 32-course partition the 4,096 snapshot completed 20/32.
+It retained beams at 32/32 and stairs at 31/32, but the older Stage 11 combined
+jump regression was only 24/32. A second conservative continuation with a
+`5e-6` learning rate and 20% Stage 11 replay did not exceed the first run's
+4,096 snapshot. The current candidate is therefore
+`runs/m4-stage23-required-jumps-replay-v1/checkpoints/ppo_vector_4096_steps.zip`,
+but it is not promoted: required-jump generalization and Stage 11 retention are
+both below gate.
+
+A checkpoint-compatible controller correction then interprets the fourth policy
+output as jump intent, lowers its threshold from `0.75` to `0.65`, and executes
+it only while grounded inside the existing geometry-aware takeoff window. This
+uses the unchanged 4,096-transition network. It completed 20/24 development and
+29/32 held-out Stage 23 courses, compared with 19/24 and 20/32 without the gate.
+The held-out gap bins were 17/19 for 6-7 studs and 12/13 for 7-8 studs. Stage 11
+also improved from 24/32 to 27/32 under this mapping. A PPO continuation trained
+with the same gate and timing rewards did not exceed the unchanged network, so
+its weights are rejected. The selected model and controller settings are pinned
+in `runs/m4-stage23-required-jumps-replay-v1/deployment.json`.
+
+Visual completion review then exposed a checkpoint-validity bug: entering the
+checkpoint's ±6-stud volume while airborne counted as advancement and could
+terminate a course without landing. Checkpoint advancement now requires ground
+contact and emits the newly advanced target observation immediately. Metrics
+from before this correction are not grounded-landing success rates.
+
+Under the corrected contract, the selected feed-forward model completed 28/32
+courses across all eight lanes, but the five seeds used as recording lane 1
+completed 0/5. Tracing seed 123008 showed that cooldown reached zero before the
+second takeoff window, while deterministic jump intent remained negative for
+every second-approach state. Eight-lane PPO, transition-valid single-lane PPO,
+frozen-representation DAgger, positive-weighted DAgger, and movement-anchored
+representation DAgger did not produce a promotable correction; the best weighted
+DAgger screen completed only 1/5 recording seeds, and representation learning
+collapsed learner-only movement. These artifacts are rejected. Further ordinary
+PPO/DAgger against the same feed-forward representation is paused. The next
+model should expose checkpoint phase explicitly or use the already-installed
+recurrent PPO stack so post-landing state can be distinguished without a
+scripted second-jump override.
+
+### Recurrent policy attempt
+
+An `sb3-contrib` `RecurrentPPO` path now provides separate training and
+state-correct deterministic evaluation scripts using `MlpLstmPolicy`. A direct
+8,192-transition Stage 23 run from scratch failed at 0/32 because memory does not
+remove the need for locomotion curriculum. Restarting from Stage 1 produced a
+32/32 recurrent locomotion policy after 4,096 transitions. The policy then
+received 4,096 Stage 2 transitions followed by an 8,192-transition lower-rate
+continuation with Stage 1 replay. Deterministic single-jump performance remained
+4/32; lowering the geometry-gated jump threshold to zero scored 3/32. The
+recurrent run is operational but not promotable and must not advance to the
+two-jump stage. This isolates the current bottleneck to jump-action learning,
+not merely missing temporal memory. The next architecture experiment should use
+a hybrid action distribution with categorical jump intent and continuous
+movement instead of thresholding a Gaussian action dimension.
+
+The subsequent checkpoint-transition audit found that Studio was still running
+an older installed `ObbyRLBridge.rbxm` even after the v7 place was rebuilt. The
+place carried the grounded-checkpoint module, but the stale plugin returned the
+just-landed target observation for an extra decision. The plugin was rebuilt and
+reinstalled. After restarting Studio, seed 123008 switched immediately from the
+first checkpoint distance to the second (`7.72` then `23.22`). At the valid
+takeoff windows both approaches were grounded with near-zero vertical velocity
+and about 16 studs/s forward speed. The main differences were lateral velocity
+and geometry: the successful first jump was high-to-low at roughly +17.5
+degrees, while the failed second jump was a nearly straight low-to-high landing.
+Corrected isolated evaluation confirmed a skill imbalance: Stage 7 high-to-low
+scored 28/32, while Stage 8 low-to-high scored only 21/32. The immediate blocker
+is therefore low-to-high skill regression plus geometry-conditioned state shift,
+not stale targets, cooldown, or temporal memory alone. Earlier Stage 7/8 results
+that predate grounded completion must not be treated as valid landing metrics.
+
+The corrected Stage 8 prerequisite now samples 4-5 stud gaps at +0.5 to +3
+studs of landing height. Its previous 6.5-7.5 stud range reused the flat jump
+envelope despite asking for positive vertical displacement. The longer uphill
+range is deferred until the shorter grounded-landing prerequisite is promoted.
+Corrected evaluation on this range was 64/64 with the existing feed-forward
+policy, so no Stage 8 weight update was needed. Stage 23 now samples its positive-
+height segments from the same 4-5 stud range while retaining 6-8 studs for level
+and downhill segments.
+
+A recording/evaluation mismatch then exposed vector-lane contamination. The
+standalone course created by `Main.server` remained collidable at the origin in
+normal vector mode, where it overlapped lane 1's generated course. Recording
+mode disabled that geometry and therefore produced worse but more truthful lane
+1 behavior. The bridge now disables standalone base-course geometry for every
+vector reset, not only recording resets. The apparent 54/64 Stage 23 result and
+other vector results measured before this correction require revalidation.
+
+After removing base-course overlap, corrected results were 57/64 for the 4-5
+stud low-to-high prerequisite and 42/64 for height-conditioned two-jump Stage
+23. A conservative 8,192-transition PPO continuation regressed at every screened
+checkpoint (28/64 at 2,048, 33/64 at 4,096, and 32/64 at 8,192) and is rejected.
+To expose episode phase without changing checkpoint tensor dimensions, student
+observation slot 20 (zero-based)—previous yaw, whose action is disabled—is now
+normalized checkpoint phase (`checkpointIndex / checkpointCount`). Course
+progress already provides a monotonic position signal; elapsed time remains
+excluded to avoid timing shortcuts.
+
+That checkpoint-compatible semantic substitution was rejected immediately: the
+unchanged policy fell from 42/64 to 29/64. Even though yaw is not applied to the
+avatar, previous yaw was functioning as learned action history. The source was
+reverted. Checkpoint phase must be appended under a new observation schema with
+explicit model migration or retraining; it cannot safely replace an existing
+feature.
+
 Neither reducing the synchronized cohort to four lanes nor adding an all-lanes
 completion barrier produced a promotable model. Four-lane screening peaked at
 19/24. The barrier correctly restored rollout lengths from roughly 10-14 to
@@ -304,3 +433,128 @@ promoted policy still scored only 21/32. Both DAgger artifacts are rejected. The
 promoted Stage 20 checkpoint remains the active agent; further Stage 21 training
 requires either a demonstrably stronger expert or a continuous/margin-aware
 action formulation that is less sensitive to tiny output changes.
+
+The restored, uncontaminated Stage 8 low-to-high prerequisite was revalidated
+on 64 fixed seeds at 57/64 (89.1%). A conservative 4,096-transition continuation
+used 70% short-uphill samples plus Stage 7, Stage 3, and Stage 11 replay. All four
+checkpoints tied at 29/32 on the initial screen, but full evaluation exposed
+regression: the 1,024-step checkpoint scored 56/64 and the 4,096-step checkpoint
+scored 52/64. The entire continuation is rejected; the original promoted model
+remains selected. Further work on the seven Stage 8 failures should use targeted
+failure-state aggregation with a validated teacher rather than another ordinary
+PPO continuation.
+
+The Stage 8 takeoff-window teacher was then audited by forcing jump intent while
+retaining learned movement and geometry gating. It completed 64/64 fixed-seed
+courses with zero hazards, so its timing labels are authoritative on this
+partition. A learner-state DAgger pass collected 564 observations and updated
+only the jump output row at `1e-5`; movement outputs and the shared actor stayed
+frozen. The candidate scored 58/64 on the development partition, 57/64 held out,
+and tied the baseline on Stage 7 and Stage 3 replay. It improved one Stage 11
+mixed-angle screen from 25/32 to 29/32. However, the required paired Stage 23
+gate regressed from 40/64 for the baseline to 35/64 for the candidate, with more
+failures after checkpoint one. The candidate is rejected. This confirms that
+isolated-jump timing labels alone do not cover the post-landing state
+distribution of the second approach.
+
+A second DAgger experiment filtered collection to checkpoint index >= 1 and
+trained on 401 post-landing observations only. Despite that data filter, the
+global jump output row also moved on first-approach states; Stage 23 collapsed to
+24/64 with 14 failures before checkpoint one, so the artifact is rejected.
+Threshold calibration on the unchanged promoted weights was more effective.
+With takeoff-window masking still mandatory, lowering jump intent threshold from
+0.65 to 0.0 scored 43/64 on Stage 23, 58/64 on Stage 8, 28/32 on Stages 7 and 3,
+and 28/32 on Stage 11. The deployment manifest now selects threshold 0.0 with
+the original model weights. This is controller calibration, not a new policy
+promotion; removing the geometry gate would invalidate these results.
+
+Stage 23 training now supports mixed initial-state sampling with
+`--post-landing-reset-probability`. At `0.5`, each eight-lane Stage 23 cohort has
+exactly four normal course starts and four checkpoint-one starts. Post-landing
+resets retarget checkpoint two immediately, settle the rig on the intermediate
+platform, then apply deterministic seed-conditioned residual motion spanning
+12-16 studs/s forward and -1.5 to +1.5 studs/s lateral. This directly trains the
+second-approach distribution while retaining first-jump replay in the same PPO
+rollout. The new protocol is built into
+`ObbyRL-M4-Post-Landing-Mix-v5.rbxlx`; live validation and training remain pending
+a Studio restart with the rebuilt plugin.
+
+Live validation confirmed the 4+4 reset contract: normal lanes reported
+checkpoint 0 with zero velocity, while post-landing lanes reported checkpoint 1,
+were grounded, targeted checkpoint 2, and retained seed-conditioned horizontal
+velocity. A 4,096-transition PPO continuation at `1e-6` used this 50/50 initial-
+state distribution. Its best checkpoint was 3,072 steps. Post-landing-only
+evaluation improved from 49/64 for the baseline to 53/64, demonstrating that the
+targeted second-approach skill did improve. However, normal-start two-jump
+completion was only 40/64 versus the deployed 43/64, so the checkpoint is not
+promoted. The next experiment should reduce the post-landing fraction or add an
+explicit behavior anchor on normal-start states to retain first-jump reliability.
+
+The synthetic post-landing reset is superseded by real landing-state replay in
+`ObbyRL-M4-Landing-Replay-v6.rbxlx`. On grounded checkpoint-one advancement, the
+Studio bridge now stores the course seed, exact root transform, linear and
+angular velocity, previous action, and Python-reported jump cooldown. A later
+post-landing reset rebuilds that same seeded course, settles the rig, and restores
+the captured state. If no natural snapshot exists for that lane, the request
+falls back to a normal start instead of fabricating a landing. Student observation
+slot 12 now contains segment-relative rather than absolute course progress, so it
+no longer directly identifies first versus second approach. This is an
+observation-semantics change: old checkpoints remain tensor-compatible but must
+not be considered behavior-compatible without migration or retraining. Live
+snapshot capture/replay validation is pending a Studio restart with v6.
+
+The first live v6 replay validated seed, checkpoint, cooldown, previous-action,
+and segment-progress restoration for all eight lanes. It also exposed impact-
+frame captures with vertical velocity as large as -32 and +13 studs/s despite a
+grounded flag. Snapshot eligibility now additionally requires absolute vertical
+speed below 3 studs/s, preserving horizontal landing momentum while excluding
+unstable impact transients. This refinement is built as
+`ObbyRL-M4-Landing-Replay-v7.rbxlx` and requires one more Studio restart before
+training.
+
+The v7 stability filter was itself rejected after live validation: one lane
+advanced into the next jump without ever producing a grounded checkpoint-one
+state below the 3 studs/s vertical threshold, so its replay request fell back to
+checkpoint zero. Impact-frame velocity is part of the actual observation handed
+to the policy immediately after checkpoint advancement; filtering it would again
+create a synthetic distribution and omit hard transitions. V8 therefore captures
+the exact first decision-boundary observation after checkpoint one, including
+its authentic vertical velocity. `ObbyRL-M4-Landing-Replay-v8.rbxlx` supersedes
+v7.
+
+V8 live validation restored all eight exact decision-boundary snapshots with
+their original seed, checkpoint, velocity, previous action, and cooldown. To
+migrate the existing policy to segment-relative progress without relearning all
+other features, actor and critic first-layer input column 12 were zeroed. This
+no-update migrated policy scored 45/64 on normal-start Stage 23, improving the
+previous deployment's 43/64, while retaining Stage 8 at 58/64, Stages 7 and 3 at
+28/32, and Stage 11 at 28/32. It is the new v8-compatible deployment baseline.
+
+A 4,096-transition PPO continuation then used 50% real landing-state replay at
+`1e-6`. The 1,024-step checkpoint led the initial screen at 26/32 but confirmed
+at only 44/64; later checkpoints were worse. All PPO-updated artifacts are
+rejected. The result supports the user's diagnosis: removing the phase-identifying
+absolute-progress feature helped more than training separate post-landing
+behavior. Further optimization should anchor the migrated actor or change the
+non-smooth thresholded action formulation rather than continue ordinary PPO.
+
+Landing-state replay is generalized in v9 from Stage 23's checkpoint-one jump
+state to every nonterminal checkpoint in Stages 20-23. Stage 20, 21, and 22
+provide two-, four-, and eight-segment procedural courses sampling gaps, offset
+jumps, beams, and stairs. Each lane maintains a checkpoint-indexed snapshot
+reservoir; reset selection chooses an available state deterministically from the
+requested seed, rebuilds the snapshot's original course seed, and restores its
+physics/action/cooldown state. This prevents geometry/state mismatches while
+allowing replay after any obstacle family. The current build is
+`roblox_places/training/ObbyRL-Mixed-Landing-Replay-v9.rbxlx`.
+
+Without additional training, the migrated Stage 20 two-segment policy was tested
+zero-shot on longer mixed courses under v9. It completed 10/16 four-obstacle
+Stage 21 courses (62.5%); all failures still reached checkpoint 2 or 3. It
+completed 9/16 eight-obstacle Stage 22 courses (56.2%); failed runs terminated at
+checkpoints 2, 3, 5, or 6. This is meaningful length generalization, but not
+one-take recording reliability. Two Stage 21 seeds that completed in batch
+evaluation failed when rerun under recording mode, illustrating remaining Roblox
+physics variance. The website completion clip should therefore use the vetted
+two-obstacle sequence; longer-course footage should be labeled zero-shot attempts
+or selected from recorded successful trials.

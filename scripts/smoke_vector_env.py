@@ -13,7 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Smoke-test simultaneous Roblox vector lanes")
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--steps", type=int, default=40)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 23), default=1)
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 24), default=1)
     parser.add_argument("--action-repeat-ticks", type=int, choices=range(1, 7), default=3)
     parser.add_argument("--privileged-observations", action="store_true")
     args = parser.parse_args()

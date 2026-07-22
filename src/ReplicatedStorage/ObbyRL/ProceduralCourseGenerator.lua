@@ -8,6 +8,7 @@ export type PartSpec = {
 	position: Vector3,
 	size: Vector3,
 	stage: number,
+	yaw: number?,
 }
 
 export type Segment = {
@@ -35,7 +36,7 @@ export type Manifest = {
 }
 
 local Generator = {}
-local VERSION = "0.5.0"
+local VERSION = "0.7.0"
 local KINDS = { "gap", "offset", "beam", "stairs" }
 
 local function platformSpec(index: number, position: Vector3, config: any): PartSpec
@@ -70,6 +71,7 @@ local function signature(
 		appendNumber(values, part.position.X)
 		appendNumber(values, part.position.Y)
 		appendNumber(values, part.position.Z)
+		appendNumber(values, part.yaw or 0)
 		appendNumber(values, part.size.X)
 		appendNumber(values, part.size.Y)
 		appendNumber(values, part.size.Z)
@@ -92,8 +94,21 @@ local function addJump(
 		gapMin = selectedRange[1]
 		gapMax = selectedRange[2]
 	end
-	local gap = random:NextNumber(gapMin, gapMax)
-	local height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
+	local gap: number
+	local height: number
+	if config.uphillGapMin and config.uphillGapMax then
+		-- Height must be sampled first only for height-conditioned curricula.
+		-- Preserve the legacy RNG order for every existing course definition.
+		height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
+		if height > (config.uphillGapHeightThreshold or 0) then
+			gapMin = config.uphillGapMin
+			gapMax = config.uphillGapMax
+		end
+		gap = random:NextNumber(gapMin, gapMax)
+	else
+		gap = random:NextNumber(gapMin, gapMax)
+		height = random:NextNumber(config.jumpHeightMin or 0, config.jumpHeightMax or 0)
+	end
 	local offset = 0
 	local angle = 0
 	if kind == "offset" then
@@ -128,13 +143,31 @@ local function addBeam(
 	local length = random:NextNumber(config.beamLengthMin, config.beamLengthMax)
 	local width = random:NextNumber(config.beamWidthMin, config.beamWidthMax)
 	local entryEdgeZ = current.Z - config.platformLength / 2
-	local beamCenter = Vector3.new(current.X, current.Y, entryEdgeZ - length / 2)
+	local cornerMagnitude = 0
+	local cornerSign = 1
+	if (config.beamDiagonalCornerOffsetMax or 0) > 0 then
+		cornerMagnitude = random:NextNumber(
+			config.beamDiagonalCornerOffsetMin or 0,
+			config.beamDiagonalCornerOffsetMax
+		)
+		cornerSign = if random:NextNumber() < 0.5 then -1 else 1
+	end
+	local nearPoint = Vector3.new(current.X + cornerMagnitude * cornerSign, current.Y, entryEdgeZ)
+	local farPoint = Vector3.new(
+		current.X - cornerMagnitude * cornerSign,
+		current.Y,
+		entryEdgeZ - length
+	)
+	local beamVector = farPoint - nearPoint
+	local beamCenter = (nearPoint + farPoint) / 2
+	local beamYaw = math.deg(math.atan2(-beamVector.X, -beamVector.Z))
 	table.insert(parts, {
 		name = string.format("Beam_%02d", index),
 		kind = "beam",
 		position = beamCenter,
-		size = Vector3.new(width, config.platformHeight, length),
+		size = Vector3.new(width, config.platformHeight, beamVector.Magnitude),
 		stage = index,
+		yaw = beamYaw,
 	})
 	local exit = Vector3.new(current.X, current.Y, entryEdgeZ - length - config.platformLength / 2)
 	table.insert(parts, platformSpec(index, exit, config))
@@ -145,7 +178,11 @@ local function addBeam(
 			entryPosition = current,
 			exitPosition = exit,
 			checkpointPosition = exit,
-			parameters = { length = length, width = width },
+			parameters = {
+				length = length,
+				width = width,
+				offset = cornerMagnitude * cornerSign,
+			},
 		}
 end
 
@@ -264,7 +301,9 @@ function Generator.validate(manifest: Manifest, config: any): (boolean, string?)
 		for second = first + 1, #manifest.parts do
 			local a = manifest.parts[first]
 			local b = manifest.parts[second]
-			if a.stage ~= b.stage and overlaps(a, b) then
+			local adjacentBeamConnection = math.abs(a.stage - b.stage) <= 1
+				and (a.kind == "beam" or b.kind == "beam")
+			if a.stage ~= b.stage and not adjacentBeamConnection and overlaps(a, b) then
 				return false, string.format("parts overlap: %s and %s", a.name, b.name)
 			end
 		end
@@ -371,7 +410,8 @@ function Generator.build(seed: number, config: any, parent: Instance, origin: Ve
 		part.Name = spec.name
 		part.Anchored = true
 		part.Size = spec.size
-		part.Position = spec.position - Vector3.new(0, spec.size.Y / 2, 0)
+		part.CFrame = CFrame.new(spec.position - Vector3.new(0, spec.size.Y / 2, 0))
+			* CFrame.Angles(0, math.rad(spec.yaw or 0), 0)
 		part.Color = COLORS[spec.kind] or COLORS.platform
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth

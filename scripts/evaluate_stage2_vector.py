@@ -16,9 +16,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate deterministic Stage 2 vector policy")
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--episodes", type=int, default=64)
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 23), default=2)
+    parser.add_argument("--max-steps", type=int, default=400)
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 25), default=2)
     parser.add_argument("--action-repeat-ticks", type=int, choices=range(1, 7), default=3)
+    parser.add_argument("--jump-threshold", type=float, default=0.75)
     parser.add_argument("--jump-cooldown-steps", type=int, default=8)
+    parser.add_argument("--jump-timing-min-distance", type=float, default=12.0)
+    parser.add_argument("--jump-timing-max-distance", type=float, default=18.0)
     parser.add_argument("--jump-feasibility-model", type=Path)
     parser.add_argument("--jump-feasibility-threshold", type=float, default=0.5)
     parser.add_argument("--mask-jump-to-takeoff-window", action="store_true")
@@ -30,9 +34,26 @@ def main() -> None:
         help="Apply the policy's strafe/forward outputs instead of forcing forward movement",
     )
     parser.add_argument("--privileged-observations", action="store_true")
+    parser.add_argument(
+        "--post-landing-reset",
+        action="store_true",
+        help="start every Stage 23 evaluation lane from checkpoint one",
+    )
+    parser.add_argument(
+        "--print-failure-seeds",
+        action="store_true",
+        help="Print course seeds for episodes that do not complete cleanly",
+    )
+    parser.add_argument(
+        "--print-demo-seeds",
+        action="store_true",
+        help="print clean course seeds and how many jump commands they applied",
+    )
     args = parser.parse_args()
     if args.episodes < 1:
         raise ValueError("episodes must be positive")
+    if args.max_steps < 1:
+        raise ValueError("max steps must be positive")
 
     model = PPO.load(args.model, device="cpu")
     feasibility_model: JumpFeasibilityModel | None = None
@@ -50,8 +71,12 @@ def main() -> None:
     batch = RobloxObbyBatch(
         transport,
         8,
-        jump_threshold=0.0,
+        jump_threshold=args.jump_threshold,
         jump_cooldown_steps=args.jump_cooldown_steps,
+        jump_timing_distance=(
+            args.jump_timing_min_distance,
+            args.jump_timing_max_distance,
+        ),
         yaw_scale=0,
         terminate_on_hazard=True,
         scripted_forward=not args.policy_movement,
@@ -62,7 +87,15 @@ def main() -> None:
         force_jump_when_feasible=args.force_jump_when_feasible,
     )
     next_seed = args.seed_start + batch.num_envs
-    observations, _ = batch.reset(list(range(args.seed_start, args.seed_start + batch.num_envs)))
+    landing_mask = (
+        np.ones(batch.num_envs, dtype=np.bool_)
+        if args.post_landing_reset
+        else np.zeros(batch.num_envs, dtype=np.bool_)
+    )
+    observations, _ = batch.reset(
+        list(range(args.seed_start, args.seed_start + batch.num_envs)), landing_mask
+    )
+    episode_seeds = np.arange(args.seed_start, args.seed_start + batch.num_envs)
     episode_gaps = observations[:, 9] * 10.0
     episode_angles = observations[:, 11] * 18.0
     active = np.zeros(batch.num_envs, dtype=np.bool_)
@@ -71,18 +104,25 @@ def main() -> None:
     clean = 0
     hazards = 0
     lengths = np.zeros(batch.num_envs, dtype=np.int32)
+    jump_counts = np.zeros(batch.num_envs, dtype=np.int32)
     completed_lengths: list[int] = []
     completed_gaps: list[float] = []
     completed_clean: list[bool] = []
     completed_angles: list[float] = []
     completed_checkpoint_indices: list[int] = []
+    failed_seeds: list[int] = []
     try:
         while finished < args.episodes:
             actions, _ = model.predict(observations, deterministic=True)
             actions[~active] = 0
             next_observations, _, terminated, truncated, infos = batch.step(actions)
             lengths[active] += 1
-            dones = (terminated | truncated) & active
+            jump_counts += np.asarray(
+                [int(bool(info.get("jump_command_applied"))) for info in infos],
+                dtype=np.int32,
+            )
+            time_limit = lengths >= args.max_steps
+            dones = (terminated | truncated | time_limit) & active
             for index in np.flatnonzero(dones):
                 if finished >= args.episodes:
                     break
@@ -94,11 +134,22 @@ def main() -> None:
                 completed_gaps.append(float(episode_gaps[index]))
                 completed_angles.append(float(episode_angles[index]))
                 completed_checkpoint_indices.append(int(infos[index].get("checkpoint_index", 0)))
+                if hazard or not bool(terminated[index]):
+                    failed_seeds.append(int(episode_seeds[index]))
+                elif args.print_demo_seeds:
+                    print(
+                        f"  demo_seed={int(episode_seeds[index])} "
+                        f"jump_commands={int(jump_counts[index])}"
+                    )
                 lengths[index] = 0
+                jump_counts[index] = 0
                 active[index] = False
                 finished += 1
             if not np.any(active) and finished < args.episodes:
-                observations, _ = batch.reset(list(range(next_seed, next_seed + batch.num_envs)))
+                observations, _ = batch.reset(
+                    list(range(next_seed, next_seed + batch.num_envs)), landing_mask
+                )
+                episode_seeds = np.arange(next_seed, next_seed + batch.num_envs)
                 next_seed += batch.num_envs
                 episode_gaps = observations[:, 9] * 10.0
                 episode_angles = observations[:, 11] * 18.0
@@ -118,6 +169,8 @@ def main() -> None:
         for checkpoint in sorted(set(completed_checkpoint_indices))
     }
     print(f"  terminal_checkpoint_indices={checkpoint_counts}")
+    if args.print_failure_seeds:
+        print(f"  failure_seeds={failed_seeds}")
     for lower, upper in zip([5.0, 6.0, 7.0, 8.0, 9.0], [6.0, 7.0, 8.0, 9.0, 10.01], strict=True):
         indices = [index for index, gap in enumerate(completed_gaps) if lower <= gap < upper]
         if indices:

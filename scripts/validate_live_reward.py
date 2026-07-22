@@ -9,7 +9,7 @@ from obby_rl.transport import StudioHTTPTransport
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 23), default=4)
+    parser.add_argument("--curriculum-stage", type=int, choices=range(1, 24), default=4)
     args = parser.parse_args()
     transport = StudioHTTPTransport(timeout=120, curriculum_stage=args.curriculum_stage)
     positive_checkpoint_steps = 0
