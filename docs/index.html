@@ -5,12 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Obby Gym trains Roblox parkour agents on procedurally generated courses using PPO, privileged teachers, DAgger, and curriculum learning.">
   <title>Obby Gym — Learning Roblox Parkour</title>
-  <link rel="stylesheet" href="styles.css?v=20260722-2">
+  <link rel="preload" href="fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css?v=20260722-7">
+  <script src="script.js?v=20260722-7" defer></script>
 </head>
 <body>
   <nav class="nav" aria-label="Primary navigation">
     <a class="wordmark" href="#top">Obby Gym</a>
     <div>
+      <a href="#training">Training</a>
       <a href="#method">Method</a>
       <a href="#results">Results</a>
       <a href="#paper">References</a>
@@ -21,88 +24,255 @@
   <main id="top">
     <header class="hero">
       <p class="kicker">Procedural control in Roblox</p>
-      <h1>Learning parkour<br>one course at a time.</h1>
+      <h1>Learning Roblox parkour</h1>
       <p class="abstract">Obby Gym is a Roblox Studio simulator and Python learning stack for agents that run, steer, jump, land, and continue across unseen obstacle courses.</p>
       <div class="hero-links">
         <a class="pill dark" href="https://github.com/shawnischenis/obby-gym">GitHub</a>
         <a class="pill" href="#method">Method</a>
-        <a class="pill" href="M3_STATUS.md">Experiment log</a>
+        <a class="pill" href="https://github.com/shawnischenis/obby-gym/blob/main/docs/M3_STATUS.md">Experiment log</a>
       </div>
     </header>
 
-    <figure class="hero-media media-frame">
-      <video autoplay muted loop playsinline controls preload="metadata" poster="media/zero-shot.jpg">
-        <source src="media/zero-shot.mp4" type="video/mp4">
-      </video>
-      <figcaption><span>Zero-shot length transfer</span>The two-segment policy is evaluated on longer four- and eight-obstacle courses it did not train on. These are attempts, not cherry-picked claims of solved performance.</figcaption>
-    </figure>
+    <section class="reel" aria-label="What training looks like, phase by phase">
+      <div class="reel-stage">
+        <figure class="reel-slide is-active" data-chapter="0">
+          <div class="reel-backdrop" style="background-image:url('media/course-generation.jpg')" aria-hidden="true"></div>
+          <video muted playsinline loop preload="auto" poster="media/course-generation.jpg">
+            <source src="media/course-generation.mp4" type="video/mp4">
+          </video>
+        </figure>
+        <figure class="reel-slide" data-chapter="1">
+          <div class="reel-backdrop" style="background-image:url('media/parallel-training.jpg')" aria-hidden="true"></div>
+          <video muted playsinline loop preload="none" poster="media/parallel-training.jpg">
+            <source data-src="media/parallel-training.mp4" type="video/mp4">
+          </video>
+        </figure>
+        <figure class="reel-slide" data-chapter="2">
+          <div class="reel-backdrop" style="background-image:url('media/varied-jumps-dual.jpg')" aria-hidden="true"></div>
+          <video muted playsinline loop preload="none" poster="media/varied-jumps-dual.jpg">
+            <source data-src="media/varied-jumps-dual.mp4" type="video/mp4">
+          </video>
+        </figure>
+        <figure class="reel-slide" data-chapter="3">
+          <div class="reel-backdrop" style="background-image:url('media/two-segment-completion.jpg')" aria-hidden="true"></div>
+          <video muted playsinline loop preload="none" poster="media/two-segment-completion.jpg">
+            <source data-src="media/two-segment-completion.mp4" type="video/mp4">
+          </video>
+        </figure>
+        <figure class="reel-slide" data-chapter="4">
+          <div class="reel-backdrop" style="background-image:url('media/zero-shot.jpg')" aria-hidden="true"></div>
+          <video muted playsinline loop preload="none" poster="media/zero-shot.jpg">
+            <source data-src="media/zero-shot.mp4" type="video/mp4">
+          </video>
+        </figure>
+
+        <div class="reel-hud">
+          <p class="reel-phase" aria-live="polite">Phase 01 · Generate</p>
+          <p class="reel-line">Every layout is sampled from a seed and feasibility-checked before an agent ever sees it.</p>
+        </div>
+        <button class="reel-toggle" type="button" aria-label="Pause reel">
+          <svg class="ic-pause" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 2h4v12H3zM9 2h4v12H9z"/></svg>
+          <svg class="ic-play" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 2l10 6-10 6z"/></svg>
+        </button>
+      </div>
+
+      <div class="reel-tabs" role="tablist" aria-label="Training phases">
+        <button role="tab" aria-selected="true" data-chapter="0"
+          data-phase="Phase 01 · Generate"
+          data-line="Every layout is sampled from a seed and feasibility-checked before an agent ever sees it.">
+          <span class="reel-bar" aria-hidden="true"><i></i></span>
+          <b>01 · Generate</b>
+          <small>Seeded courses, no manual construction</small>
+        </button>
+        <button role="tab" aria-selected="false" data-chapter="1"
+          data-phase="Phase 02 · Simulate"
+          data-line="Eight isolated lanes step Roblox physics in lockstep from one batched Python action exchange.">
+          <span class="reel-bar" aria-hidden="true"><i></i></span>
+          <b>02 · Simulate</b>
+          <small>Parallel lanes, one action batch</small>
+        </button>
+        <button role="tab" aria-selected="false" data-chapter="2"
+          data-phase="Phase 03 · Vary"
+          data-line="The curriculum widens gaps, shifts landing heights, and bends approach angles — shown from the side and from behind.">
+          <span class="reel-bar" aria-hidden="true"><i></i></span>
+          <b>03 · Vary</b>
+          <small>Gap, height, and angle sweeps</small>
+        </button>
+        <button role="tab" aria-selected="false" data-chapter="3"
+          data-phase="Phase 04 · Chain"
+          data-line="Each approach begins with the velocity and pose the previous landing produced.">
+          <span class="reel-bar" aria-hidden="true"><i></i></span>
+          <b>04 · Chain</b>
+          <small>Segments compound into courses</small>
+        </button>
+        <button role="tab" aria-selected="false" data-chapter="4"
+          data-phase="Phase 05 · Transfer"
+          data-line="The two-segment policy attempts four- and eight-obstacle courses it never trained on.">
+          <span class="reel-bar" aria-hidden="true"><i></i></span>
+          <b>05 · Transfer</b>
+          <small>Zero-shot on longer unseen courses</small>
+        </button>
+      </div>
+    </section>
 
     <section class="overview prose">
-      <h2>A small world for studying general control.</h2>
+      <h2>A small world for studying general control</h2>
       <div class="two-col">
         <p>Individual Roblox jumps are simple. Chaining them is not. The agent must preserve momentum, time takeoff, steer in the air, establish a landing, switch to the next target, and repeat. Small errors compound with course length.</p>
         <p>We turn that problem into a reproducible benchmark: every course is generated from a seed, checked against a feasibility model, simulated with Roblox physics, and exposed through a synchronous structured-observation interface.</p>
       </div>
+
+      <div class="seedlab" hidden>
+        <div class="seedlab-bar">
+          <p class="seedlab-kicker">Try it — every seed is a course</p>
+          <div class="seedlab-controls">
+            <label for="seed-input">Seed</label>
+            <input id="seed-input" type="number" value="1000" min="0" max="2147483646" step="1">
+            <button class="seedlab-dice" type="button">Randomize</button>
+          </div>
+        </div>
+        <div class="seedlab-canvas">
+          <svg role="img" aria-label="Top-down schematic of the obstacle course generated from the current seed"></svg>
+        </div>
+        <div class="seedlab-foot">
+          <p class="seedlab-readout" aria-live="polite"></p>
+          <ul class="seedlab-legend">
+            <li><i style="background:#4891d2"></i>platform</li>
+            <li><i style="background:#a86d0a"></i>beam</li>
+            <li><i style="background:#5b3d99"></i>stairs</li>
+          </ul>
+        </div>
+        <p class="seedlab-note">Runs the layout rules of generator v0.7 (config v1: eight segments, 3.5–7&nbsp;stud gaps, ±5&nbsp;stud offsets, beams, stairs, and the same feasibility limits with up to 32 regeneration attempts) in your browser. The Studio generator adds a scripted-oracle pass and uses Roblox’s RNG, so the same seed produces a different course there.</p>
+      </div>
     </section>
 
-    <section class="showcase" aria-labelledby="showcase-title">
+    <section id="training" class="curriculum">
       <div class="section-heading">
-        <p class="kicker">Environment</p>
-        <h2 id="showcase-title">Variation is the training data.</h2>
-        <p>The curriculum starts with locomotion and one jump, then introduces distance, landing height, approach angle, beams, stairs, and multi-obstacle sequences.</p>
+        <p class="kicker">Curriculum</p>
+        <h2>Trained in stages</h2>
+        <p>The promoted policy is the product of a 23-stage curriculum — each skill learned in isolation, then recombined. A checkpoint advances only after clearing at least 90% combined completion on development and untouched validation seeds; failed runs stay in the <a class="inline-link" href="https://github.com/shawnischenis/obby-gym/blob/main/docs/M3_STATUS.md">experiment log</a>.</p>
       </div>
 
-      <figure class="media-frame wide">
-        <video autoplay muted loop playsinline preload="metadata" poster="media/course-generation.jpg">
-          <source src="media/course-generation.mp4" type="video/mp4">
-        </video>
-        <figcaption><span>Seeded generation</span>Procedural seeds produce distinct, deterministic layouts without manual course construction.</figcaption>
-      </figure>
-
-      <div class="media-pair">
-        <figure class="media-frame">
-          <video autoplay muted loop playsinline preload="metadata" poster="media/parallel-training.jpg">
-            <source src="media/parallel-training.mp4" type="video/mp4">
-          </video>
-          <figcaption><span>Parallel interaction</span>Independent agents advance together from one batched Python action exchange.</figcaption>
-        </figure>
-        <figure class="media-frame">
-          <video autoplay muted loop playsinline preload="metadata" poster="media/varied-jumps.jpg">
-            <source src="media/varied-jumps.mp4" type="video/mp4">
-          </video>
-          <figcaption><span>Geometry curriculum</span>Side-view rollouts make changes in gap, height, and landing geometry visible.</figcaption>
-        </figure>
+      <div class="stage-explorer">
+        <div class="stage-nav" role="tablist" aria-label="Curriculum milestones">
+          <button role="tab" id="stage-tab-0" aria-selected="true" aria-controls="stage-panel-0" data-stages="1"><i>1</i>Locomotion</button>
+          <button role="tab" id="stage-tab-1" aria-selected="false" aria-controls="stage-panel-1" data-stages="2"><i>2</i>First jump</button>
+          <button role="tab" id="stage-tab-2" aria-selected="false" aria-controls="stage-panel-2" data-stages="3-5"><i>3–5</i>Narrow gaps</button>
+          <button role="tab" id="stage-tab-3" aria-selected="false" aria-controls="stage-panel-3" data-stages="13-15"><i>13–15</i>Gap boundaries</button>
+          <button role="tab" id="stage-tab-4" aria-selected="false" aria-controls="stage-panel-4" data-stages="7-8"><i>7–8</i>Heights</button>
+          <button role="tab" id="stage-tab-5" aria-selected="false" aria-controls="stage-panel-5" data-stages="9-10"><i>9–10</i>Angles</button>
+          <button role="tab" id="stage-tab-6" aria-selected="false" aria-controls="stage-panel-6" data-stages="11"><i>11</i>Combined</button>
+          <button role="tab" id="stage-tab-7" aria-selected="false" aria-controls="stage-panel-7" data-stages="20"><i>20</i>Chained</button>
+          <button role="tab" id="stage-tab-8" aria-selected="false" aria-controls="stage-panel-8" data-stages="21-23"><i>21+</i>Open</button>
+        </div>
+        <div class="stage-rail" aria-hidden="true"></div>
+        <div class="stage-panels">
+          <article class="stage-panel is-active" id="stage-panel-0" role="tabpanel" aria-labelledby="stage-tab-0">
+            <header><span class="stage-tag">Stage 1</span><b>5/5 deterministic, zero hazards</b></header>
+            <h3>Locomotion</h3>
+            <p>Run a 200-stud runway without falling off — promoted only after an actuator audit replaced twitchy key taps with held continuous movement.</p>
+          </article>
+          <article class="stage-panel" id="stage-panel-1" role="tabpanel" aria-labelledby="stage-tab-1">
+            <header><span class="stage-tag">Stage 2</span><b>128/128 via privileged DAgger</b></header>
+            <h3>First required jump</h3>
+            <p>A 7-stud gap momentum alone cannot cross. The valid takeoff window was measured with a jump-pulse sweep before any policy trained on it.</p>
+          </article>
+          <article class="stage-panel" id="stage-panel-2" role="tabpanel" aria-labelledby="stage-tab-2">
+            <header><span class="stage-tag">Stages 3–5</span><b>93.8% combined</b></header>
+            <h3>Narrow gaps</h3>
+            <p>Fresh-seed DAgger repaired seed overfitting; the promoted checkpoint then generalized to Stage 5 with no additional training at all.</p>
+          </article>
+          <article class="stage-panel" id="stage-panel-3" role="tabpanel" aria-labelledby="stage-tab-3">
+            <header><span class="stage-tag">Stages 13–15</span><b>Up to 98.4% combined</b></header>
+            <h3>Gap boundaries</h3>
+            <p>Wide and short gap ranges were learned in isolation, then rehearsed together with overlapping sampling to stop the two skills interfering.</p>
+          </article>
+          <article class="stage-panel" id="stage-panel-4" role="tabpanel" aria-labelledby="stage-tab-4">
+            <header><span class="stage-tag">Stages 7–8</span><b>128/128 each</b></header>
+            <h3>Landing heights</h3>
+            <p>High-to-low and low-to-high landings transferred directly from the gap curriculum — no dedicated training run was needed.</p>
+          </article>
+          <article class="stage-panel" id="stage-panel-5" role="tabpanel" aria-labelledby="stage-tab-5">
+            <header><span class="stage-tag">Stages 9–10</span><b>99.2%, then 95.3% at ±18°</b></header>
+            <h3>Approach angles</h3>
+            <p>Small negative angles failed asymmetrically at 52.9%. Steering-aware DAgger with a checkpoint-offset oracle corrected it.</p>
+          </article>
+          <article class="stage-panel" id="stage-panel-6" role="tabpanel" aria-labelledby="stage-tab-6">
+            <header><span class="stage-tag">Stage 11</span><b>122/128 combined</b></header>
+            <h3>Combined geometry</h3>
+            <p>Gap, landing height, and approach angle vary together on every segment — the full single-jump distribution.</p>
+          </article>
+          <article class="stage-panel" id="stage-panel-7" role="tabpanel" aria-labelledby="stage-tab-7">
+            <header><span class="stage-tag">Stage 20</span><b>122/128 · promoted</b></header>
+            <h3>Chained mixed segments</h3>
+            <p>Narrow beams and stairs join the distribution, and PPO fine-tunes with weighted replay of every earlier skill family.</p>
+          </article>
+          <article class="stage-panel open" id="stage-panel-8" role="tabpanel" aria-labelledby="stage-tab-8">
+            <header><span class="stage-tag">Stages 21+</span><b>In progress</b></header>
+            <h3>Open problems</h3>
+            <p>Four-segment chains and the required-jump correction are documented, in-progress work — not silently folded into the claims above.</p>
+          </article>
+        </div>
       </div>
     </section>
 
     <section id="method" class="method">
       <div class="section-heading">
         <p class="kicker">Method</p>
-        <h2>Roblox is the simulator.<br>Python is the learner.</h2>
+        <h2>Architecture</h2>
+        <p>Roblox Studio simulates; a local Python process learns. One HTTP exchange per decision step drives all eight lanes.</p>
       </div>
-      <div class="pipeline" role="img" aria-label="Seeded course generation flows into parallel Roblox physics, structured observations, Python learning, and held-out evaluation">
-        <article><b>01</b><h3>Generate</h3><p>Seeded geometry and a validated checkpoint chain.</p></article>
-        <i aria-hidden="true">→</i>
-        <article><b>02</b><h3>Simulate</h3><p>Up to eight isolated lanes under Roblox physics.</p></article>
-        <i aria-hidden="true">→</i>
-        <article><b>03</b><h3>Observe</h3><p>Local motion, target geometry, rays, and action history.</p></article>
-        <i aria-hidden="true">→</i>
-        <article><b>04</b><h3>Learn</h3><p>Imitation, DAgger, replay, and conservative PPO.</p></article>
-        <i aria-hidden="true">→</i>
-        <article><b>05</b><h3>Evaluate</h3><p>Deterministic policies on untouched course seeds.</p></article>
+      <div class="arch is-open">
+        <button class="arch-summary" type="button" aria-expanded="true" aria-controls="arch-detail">
+          <span class="arch-chip"><strong>Roblox Studio</strong><small>8 lanes · seeded courses</small></span>
+          <span class="arch-bus"><b>⇄</b>JSON · 127.0.0.1:8765</span>
+          <span class="arch-chip"><strong>Python</strong><small>vector env · PPO / DAgger</small></span>
+          <span class="arch-hint" aria-hidden="true">Hover or tap to expand</span>
+        </button>
+        <div class="arch-detail" id="arch-detail">
+          <div class="arch-stack">
+            <i class="arch-rail up" aria-hidden="true"></i>
+            <i class="arch-rail down" aria-hidden="true"></i>
+            <div class="arch-group">
+              <header><h3>Python</h3><span>Learning process</span></header>
+              <div class="arch-node">
+                <h4>Trainer</h4>
+                <p>PPO clipped updates and DAgger relabelling fit the same network, with weighted replay of earlier stages; checkpoints gated on held-out seeds.</p>
+                <span class="arch-chips" aria-label="Policy update path"><em>rollout buffer</em><b>→</b><em>gradient step</em><b>→</b><em>MLP policy · 22 in, 4 out</em></span>
+              </div>
+              <i class="arch-flow"><b>▼</b> step(actions ×8)&ensp;·&ensp;observations, rewards <b>▲</b></i>
+              <div class="arch-node"><h4>Vector environment</h4><p>One Gym-style step drives all eight lanes; cohort resets keep transitions valid.</p></div>
+              <i class="arch-flow"><b>↕</b> schema-validated protocol messages</i>
+              <div class="arch-node"><h4>Loopback broker</h4><p>Local HTTP server; every run records its config hash and seed partitions.</p></div>
+            </div>
+            <div class="arch-boundary">
+              <span><b>▲</b> observations — 22 student / 48 teacher values</span>
+              <span class="arch-mid">Process boundary<br>JSON · 127.0.0.1:8765 · lockstep</span>
+              <span><b>▼</b> actions — strafe · forward · yaw · jump</span>
+            </div>
+            <div class="arch-group">
+              <div class="arch-node"><h4>Bridge plugin</h4><p>POSTs batched lane state each decision step; holds each returned action across the physics interval.</p></div>
+              <i class="arch-flow"><b>▲</b> lane state&ensp;·&ensp;held actuation <b>▼</b></i>
+              <div class="arch-node"><h4>Simulation lanes ×8</h4><p>Isolated courses simulated under one physics clock.</p></div>
+              <i class="arch-flow"><b>▲</b> rebuilt per episode from a seed</i>
+              <div class="arch-node"><h4>Course builder</h4><p>Procedural geometry with a validated checkpoint chain.</p></div>
+              <header class="arch-foot"><h3>Roblox Studio</h3><span>Simulation</span></header>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="specs">
-        <article><strong>22</strong><h3>Student observations</h3><p>Limited local sensing intended for deployment.</p></article>
-        <article><strong>48</strong><h3>Teacher observations</h3><p>Exact geometry and route state available only during teaching.</p></article>
-        <article><strong>4</strong><h3>Continuous actions</h3><p>Strafe, forward motion, yaw, and jump intent.</p></article>
-        <article><strong>8×</strong><h3>Parallel lanes</h3><p>Synchronous Roblox interaction from one local server.</p></article>
+        <article><strong data-count>22</strong><h3>Student observations</h3><p>Limited local sensing intended for deployment.</p></article>
+        <article><strong data-count>48</strong><h3>Teacher observations</h3><p>Exact geometry and route state available only during teaching.</p></article>
+        <article><strong data-count>4</strong><h3>Continuous actions</h3><p>Strafe, forward motion, yaw, and jump intent.</p></article>
+        <article><strong data-count>8×</strong><h3>Parallel lanes</h3><p>Synchronous Roblox interaction from one local server.</p></article>
       </div>
 
       <div class="recipe">
         <div>
           <p class="kicker">Training recipe</p>
-          <h3>Teach broadly, then recover from the student’s mistakes.</h3>
+          <h3>Teach broadly, then recover from the student’s mistakes</h3>
         </div>
         <ol>
           <li><span>1</span>Train a privileged policy with full course geometry.</li>
@@ -113,31 +283,32 @@
       </div>
     </section>
 
-    <section class="completion">
-      <div class="section-heading compact">
-        <p class="kicker">Evaluation</p>
-        <h2>Landing once is not enough.</h2>
-        <p>The promoted policy is tested on chained geometry where the second approach begins with the velocity and pose produced by the first landing.</p>
-      </div>
-      <figure class="media-frame wide">
-        <video autoplay muted loop playsinline controls preload="metadata" poster="media/two-segment-completion.jpg">
-          <source src="media/two-segment-completion.mp4" type="video/mp4">
-        </video>
-        <figcaption><span>Two-segment rollout</span>A deterministic policy traverses a chained course while target features advance checkpoint by checkpoint.</figcaption>
-      </figure>
-    </section>
-
     <section id="results" class="results">
       <div class="section-heading">
-        <p class="kicker">Results</p>
-        <h2>Matched evaluations,<br>not isolated successes.</h2>
+        <p class="kicker">Evaluation</p>
+        <h2>Results</h2>
         <p>Reported comparisons use recorded checkpoints and fixed seed partitions. Experiments that have not run remain marked as such.</p>
       </div>
 
       <div class="headline-result">
-        <div><strong>95.3%</strong><span>122 / 128 clean completions</span></div>
+        <div><strong data-count>95.3%</strong><span>122 / 128 clean completions</span></div>
         <p>Promoted two-segment policy across combined jump, narrow-beam, and stair geometry.</p>
       </div>
+
+      <figure class="media-frame wide result-media">
+        <video autoplay muted loop playsinline controls preload="metadata" poster="media/two-segment-front.jpg">
+          <source src="media/two-segment-front.mp4" type="video/mp4">
+        </video>
+        <figcaption><span>Two-segment rollout</span>Landing once is not enough — the second approach begins with the velocity and pose the first landing produced. Deterministic policy, held-out seed.</figcaption>
+      </figure>
+
+      <figure class="trace" hidden>
+        <div class="trace-plot">
+          <svg role="img" aria-label="Line chart of distance to the active checkpoint at each decision step of one recorded deterministic episode"></svg>
+          <div class="trace-tip" hidden></div>
+        </div>
+        <figcaption><span>Episode trace</span><span>Distance to the active checkpoint at every decision step of one recorded deterministic episode. Diamonds mark checkpoint advances; amber ticks mark jump intent. <span class="trace-meta"></span> <a class="inline-link" href="media/episode-trace.json">Raw data ↗</a></span></figcaption>
+      </figure>
 
       <div class="ablation-table" role="table" aria-label="Policy ablations">
         <div class="table-row table-head" role="row"><span>Comparison</span><span>Policy</span><span>Success</span><span>Takeaway</span></div>
@@ -147,21 +318,10 @@
       </div>
     </section>
 
-    <section class="lessons prose">
-      <p class="kicker">What mattered</p>
-      <h2>The environment contract was part of the algorithm.</h2>
-      <div class="lesson-list">
-        <article><span>01</span><div><h3>Hold actions for a fixed duration.</h3><p>Refreshing movement through each physics interval replaced twitchy key tapping with continuous control.</p></div></article>
-        <article><span>02</span><div><h3>Reset cohorts synchronously.</h3><p>Rebuilding one course while other lanes moved corrupted timing; synchronized resets restored valid transitions.</p></div></article>
-        <article><span>03</span><div><h3>Train on recovery states.</h3><p>Post-landing starts and learner-visited DAgger states exposed the distribution that perfect first approaches missed.</p></div></article>
-        <article><span>04</span><div><h3>Keep honest task boundaries.</h3><p>Unreliable extreme jumps remain stress tests instead of silently entering the claimed solved distribution.</p></div></article>
-      </div>
-    </section>
-
     <section id="paper" class="references">
       <div class="section-heading compact">
         <p class="kicker">Research context</p>
-        <h2>Ideas this project builds on.</h2>
+        <h2>Ideas this project builds on</h2>
       </div>
       <div class="reference-list">
         <a href="https://arxiv.org/abs/1707.06347"><span>01</span><div><h3>Proximal Policy Optimization Algorithms</h3><p>Schulman et al., 2017 · Policy optimization</p></div><b>↗</b></a>

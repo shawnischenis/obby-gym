@@ -148,15 +148,33 @@ skill lessons and will not show the same layout variety.
 Keep original recordings in `candidates/`. Once selected, export:
 
 ```text
-docs/media/course-generation.mp4
-docs/media/course-generation.webp
-docs/media/parallel-training.mp4
-docs/media/parallel-training.webp
-docs/media/varied-jumps.mp4
-docs/media/varied-jumps.webp
-docs/media/obby-completion.mp4
-docs/media/obby-completion.webp
+docs/media/course-generation.mp4      + course-generation.jpg
+docs/media/parallel-training.mp4      + parallel-training.jpg
+docs/media/varied-jumps.mp4           + varied-jumps.jpg      (side view)
+docs/media/back-view-jumps.mp4        + back-view-jumps.jpg   (back view)
+docs/media/varied-jumps-dual.mp4      + varied-jumps-dual.jpg (side + back stitched vertically; used on the site)
+docs/media/two-segment-completion.mp4 + two-segment-completion.jpg
+docs/media/two-segment-front.mp4      + two-segment-front.jpg
+docs/media/zero-shot.mp4              + zero-shot.jpg
 ```
+
+Current exports were produced from the original captures with
+`ffmpeg -crf 20 -preset slow -pix_fmt yuv420p -movflags +faststart`, native
+resolution, 30 FPS, audio stripped. Posters are single frames at up to 1200 px
+wide, JPEG quality 4.
+
+The site's "Episode trace" figure in the Results section reads
+`docs/media/episode-trace.json` and stays hidden until that file exists.
+Generate it from a real deterministic episode (Studio playing, bridge plugin
+installed) with:
+
+```bash
+.venv/bin/python scripts/export_episode_trace.py \
+  --model runs/m4-stage20-two-segment-replay-v1/checkpoints/ppo_vector_4096_steps.zip \
+  --curriculum-stage 20 --seed 0
+```
+
+Do not hand-write this file; the figure is presented as a recorded episode.
 
 Recommended delivery settings:
 
